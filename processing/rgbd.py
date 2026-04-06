@@ -51,7 +51,7 @@ def rgbd2pcd(color_img, depth_img, K, dist=None, bbox=None, depth_scale=1000.0, 
     # Mask invalid near-field and far-field RealSense readings
     # Near: <1500mm = machine body / sensor noise (dead zone 0.5-2.0m confirms)
     # Far:  >3200mm = floor and sensor overflow (RealSense D405 max ~5m, but noise starts at 3.5m+)
-    depth_min_mm = int(1500)   # nothing real between 0.5m–2.0m
+    depth_min_mm = int(2000)   # dead zone confirmed 0–2.0m (depth histogram)
     depth_max_mm = int(depth_trunc * depth_scale)  # e.g. 3.2m * 1000 = 3200
     invalid_mask = (depth_img < depth_min_mm) | (depth_img > depth_max_mm)
     depth_img = depth_img.copy()

@@ -1,0 +1,66 @@
+{
+  "best_fx": 1108,
+  "cx": 640.0,
+  "cy": 360.0,
+  "mean_fitness": 0.698398,
+  "mean_rmse": 0.005031,
+  "plane_inlier_ratio": 0.8524,
+  "score": 0.790799,
+  "depth_min_m": 2.0,
+  "depth_trunc_m": 3.2,
+  "sweep_weights": {
+    "plane": 0.6,
+    "fitness": 0.4
+  },
+  "all_results": [
+    {
+      "fx": 700,
+      "mean_fitness": 0.68588,
+      "mean_rmse": 0.005031,
+      "plane_inlier_ratio": 0.7109,
+      "score": 0.700892
+    },
+    {
+      "fx": 800,
+      "mean_fitness": 0.687857,
+      "mean_rmse": 0.005037,
+      "plane_inlier_ratio": 0.7513,
+      "score": 0.725923
+    },
+    {
+      "fx": 900,
+      "mean_fitness": 0.690722,
+      "mean_rmse": 0.0051,
+      "plane_inlier_ratio": 0.7656,
+      "score": 0.735649
+    },
+    {
+      "fx": 1000,
+      "mean_fitness": 0.682153,
+      "mean_rmse": 0.005149,
+      "plane_inlier_ratio": 0.8218,
+      "score": 0.765941
+    },
+    {
+      "fx": 1050,
+      "mean_fitness": 0.693704,
+      "mean_rmse": 0.005077,
+      "plane_inlier_ratio": 0.8233,
+      "score": 0.771462
+    },
+    {
+      "fx": 1108,
+      "mean_fitness": 0.698398,
+      "mean_rmse": 0.005031,
+      "plane_inlier_ratio": 0.8524,
+      "score": 0.790799
+    },
+    {
+      "fx": 1200,
+      "mean_fitness": 0.70198,
+      "mean_rmse": 0.005009,
+      "plane_inlier_ratio": 0.8177,
+      "score": 0.771412
+    }
+  ]
+}
