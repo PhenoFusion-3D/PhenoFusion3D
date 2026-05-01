@@ -1,5 +1,4 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-from processing.reconstructor import Reconstructor
 
 
 class ProcessingWorker(QThread):
@@ -54,6 +53,8 @@ class ProcessingWorker(QThread):
 
     def run(self):
         try:
+            from processing.reconstructor import Reconstructor
+
             self._reconstructor = Reconstructor(
                 pairs=self.pairs,
                 K=self.K,

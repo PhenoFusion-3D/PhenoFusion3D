@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -20,6 +19,8 @@ class CalibrationWorker(QThread):
 
     def run(self):
         try:
+            import cv2
+
             pairs = load_image_pairs(self.rgb_dir, self.depth_dir, step=1)
             if len(pairs) < 2:
                 raise RuntimeError('Need at least 2 RGB/depth frames for calibration.')

@@ -10,7 +10,6 @@ from app.calibration_worker import CalibrationWorker
 from app.quality_worker import QualityWorker
 from capture          import CaptureParams
 from capture.gantry   import GantryController
-from processing.quality import QualityParams, QualityThresholds
 from visualiser.viewer import PointCloudViewer
 
 
@@ -232,7 +231,9 @@ class Controller(QObject):
         self.capture_error.emit(msg)
 
     # ---------------------------------------------------------------- quality
-    def _build_quality_params(self, rgb_dir: str) -> QualityParams:
+    def _build_quality_params(self, rgb_dir: str):
+        from processing.quality import QualityParams, QualityThresholds
+
         is_icl = 'icl' in rgb_dir.lower()
         return QualityParams(
             depth_scale=5000.0 if is_icl else 1000.0,
@@ -330,6 +331,7 @@ class Controller(QObject):
 
     @pyqtSlot()
     def on_gantry_home(self):
+        self.status_changed.emit('Moving gantry to capture start position...')
         self.gantry.go_home()
 
     def shutdown(self):

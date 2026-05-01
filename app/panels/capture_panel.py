@@ -22,9 +22,11 @@ class CapturePanel(QWidget):
     # backend_pref, out_root, velocity_mps, end_position_m, fps, duration_s
     capture_requested      = pyqtSignal(str, str, float, float, int, float)
     capture_stop_requested = pyqtSignal()
+    home_requested         = pyqtSignal()
 
     def __init__(self):
         super().__init__()
+        self._gantry_available = ros_available()
         self._build_ui()
 
     def _build_ui(self):
@@ -115,8 +117,21 @@ class CapturePanel(QWidget):
             'QPushButton:disabled { background:#94a3b8; }'
         )
         self.stop_btn.clicked.connect(self.capture_stop_requested.emit)
+        self.home_btn = QPushButton('Home')
+        self.home_btn.setStyleSheet(
+            'QPushButton { background:#2563eb; color:white; border-radius:4px; padding:6px; font-weight:bold; }'
+            'QPushButton:disabled { background:#94a3b8; }'
+        )
+        self.home_btn.setToolTip('Move the gantry back to the capture start position.')
+        self.home_btn.clicked.connect(self.home_requested.emit)
+        self.home_btn.setEnabled(self._gantry_available)
+        if not self._gantry_available:
+            self.home_btn.setToolTip(
+                'Gantry home is only available on the lab Linux rig with ROS sourced.'
+            )
         btn_row.addWidget(self.capture_btn)
         btn_row.addWidget(self.stop_btn)
+        btn_row.addWidget(self.home_btn)
         layout.addLayout(btn_row)
 
         # Progress + status
@@ -162,6 +177,7 @@ class CapturePanel(QWidget):
     def set_running(self, running: bool):
         self.capture_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+        self.home_btn.setEnabled(not running and self._gantry_available)
         self.backend_combo.setEnabled(not running)
 
     def on_progress(self, idx: int, total: int):

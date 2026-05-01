@@ -1,5 +1,11 @@
 # Virtual environment
 venv/
+venv_win/
+.venv/
+.venv312/
+
+# Build metadata
+*.egg-info/
 
 # Python cache
 __pycache__/

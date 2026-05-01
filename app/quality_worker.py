@@ -6,11 +6,12 @@ QThread wrapping processing.quality.{quick_check, full_report}.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from processing.quality import QualityParams, quick_check, full_report
+if TYPE_CHECKING:
+    from processing.quality import QualityParams
 
 
 class QualityWorker(QThread):
@@ -40,6 +41,8 @@ class QualityWorker(QThread):
 
     def run(self):
         try:
+            from processing.quality import full_report, quick_check
+
             if self.mode == 'full':
                 report = full_report(
                     self.pairs, self.K, self.dist, self.params,

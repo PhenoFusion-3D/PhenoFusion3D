@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         # Capture panel -> controller -> capture panel
         self.capture_panel.capture_requested.connect(self.controller.on_capture_clicked)
         self.capture_panel.capture_stop_requested.connect(self.controller.on_capture_stop)
+        self.capture_panel.home_requested.connect(self.controller.on_gantry_home)
         self.controller.capture_progress.connect(self.capture_panel.on_progress)
         self.controller.capture_complete.connect(self._on_capture_complete)
         self.controller.capture_error.connect(self.capture_panel.on_error)
