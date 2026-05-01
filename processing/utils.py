@@ -42,8 +42,9 @@ def clean_pcd_for_registration(pcd, nb_neighbors=10, std_ratio=0.4):
         nb_neighbors=nb_neighbors,
         std_ratio=std_ratio,
     )
-    # Radius outlier removal catches isolated flying pixels the stat filter misses
-    pcd, _ = pcd.remove_radius_outlier(nb_points=20, radius=0.05)
+    # Keep this loose: this helper runs before ICP, so over-filtering removes
+    # thin leaves and makes the remaining cloud look artificially flat.
+    pcd, _ = pcd.remove_radius_outlier(nb_points=5, radius=0.5)
     return pcd
 
 

@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar
 from PyQt5.QtCore import pyqtSlot
-from PyQt5.QtGui import QColor
+import math
 
 
 class MetricsPanel(QWidget):
@@ -49,23 +49,34 @@ class MetricsPanel(QWidget):
     @pyqtSlot(int, int, float, float, int, int)
     def update_metrics(self, frame_idx, total, fitness, rmse, n_success, n_fail):
         self.frame_lbl.setText(f'Frame: {frame_idx + 1} / {total}')
-        self.rmse_lbl.setText(f'RMSE: {rmse:.5f}')
         self.success_lbl.setText(f'Success: {n_success}')
         self.fail_lbl.setText(f'Failed: {n_fail}')
 
-        # Colour-coded fitness
-        fit_text = f'Fitness: {fitness:.4f}'
-        if fitness >= 0.5:
-            colour = '#16a34a'   # green
-        elif fitness >= 0.1:
-            colour = '#d97706'   # orange
+        if isinstance(rmse, float) and math.isnan(rmse):
+            if isinstance(fitness, float) and math.isnan(fitness):
+                self.fitness_lbl.setText('Depth: n/a')
+            else:
+                self.fitness_lbl.setText(f'Depth: {fitness * 100:.1f}%')
+            self.rmse_lbl.setText('RMSE: n/a')
+            self.fitness_lbl.setStyleSheet(
+                'font-size:12px; padding:2px 6px; background:#e2e8f0; '
+                'color:#475569; border-radius:3px; font-weight:bold;'
+            )
         else:
-            colour = '#dc2626'   # red
-        self.fitness_lbl.setText(fit_text)
-        self.fitness_lbl.setStyleSheet(
-            f'font-size:12px; padding:2px 6px; background:{colour}22; '
-            f'color:{colour}; border-radius:3px; font-weight:bold;'
-        )
+            self.rmse_lbl.setText(f'RMSE: {rmse:.5f}')
+            # Colour-coded fitness
+            fit_text = f'Fitness: {fitness:.4f}'
+            if fitness >= 0.5:
+                colour = '#16a34a'   # green
+            elif fitness >= 0.1:
+                colour = '#d97706'   # orange
+            else:
+                colour = '#dc2626'   # red
+            self.fitness_lbl.setText(fit_text)
+            self.fitness_lbl.setStyleSheet(
+                f'font-size:12px; padding:2px 6px; background:{colour}22; '
+                f'color:{colour}; border-radius:3px; font-weight:bold;'
+            )
 
         if n_fail > 0:
             self.fail_lbl.setStyleSheet('font-size:12px; padding:2px 6px; background:#fee2e2; color:#dc2626; border-radius:3px;')

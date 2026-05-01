@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
+import math
 
 
 class LogPanel(QWidget):
@@ -36,7 +37,7 @@ class LogPanel(QWidget):
 
         # Table
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(['Frame', 'Status', 'Fitness', 'RMSE', 'Note'])
+        self.table.setHorizontalHeaderLabels(['Frame', 'Status', 'Fitness / Depth', 'RMSE', 'Note'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setMaximumHeight(180)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -44,14 +45,19 @@ class LogPanel(QWidget):
         self._outer.addWidget(self.table)
 
     def append_row(self, frame_idx, status, fitness, rmse, note=''):
+        if status == 'INTEGRATED' and not (isinstance(fitness, float) and math.isnan(fitness)):
+            fitness_text = f'{fitness * 100:.1f}%'
+        else:
+            fitness_text = 'n/a' if isinstance(fitness, float) and math.isnan(fitness) else f'{fitness:.4f}'
+        rmse_text = 'n/a' if isinstance(rmse, float) and math.isnan(rmse) else f'{rmse:.5f}'
         row = self.table.rowCount()
         self.table.insertRow(row)
 
         items = [
             str(frame_idx),
             status,
-            f'{fitness:.4f}',
-            f'{rmse:.5f}',
+            fitness_text,
+            rmse_text,
             note
         ]
         for col, text in enumerate(items):

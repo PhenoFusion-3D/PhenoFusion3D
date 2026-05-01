@@ -33,6 +33,11 @@ class PointCloudViewer:
         if not self._has_geom:
             self.vis.add_geometry(pcd)
             self._has_geom = True
+            self.vis.reset_view_point(True)
+            vc = self.vis.get_view_control()
+            vc.set_front([0.0, -0.3, -1.0])
+            vc.set_up([0.0, -1.0, 0.0])
+            vc.set_zoom(0.5)
         else:
             self.vis.update_geometry(pcd)
         self.vis.poll_events()

@@ -261,11 +261,24 @@ class Reconstructor:
             # TSDF integrate() expects world-to-camera (inverse of camera pose)
             extrinsic = np.linalg.inv(T_c2w)
 
+            valid_depth_count = np.count_nonzero(depth_masked)
+            if valid_depth_count == 0:
+                print(f'[reconstructor] WARNING: Frame {i} has no valid depth, skipping.')
+                self.fail_list.append({'frame': i, 'reason': 'no valid depth'})
+                self._fire_on_frame(i, total, self.reference_pcd,
+                                    float('nan'), float('nan'), 'FAILED')
+                continue
+
             volume.integrate(rgbd, intrinsic, extrinsic)
 
-            self.succeed_list.append({'frame': i, 'fitness': 1.0, 'rmse': 0.0})
-            # Pass empty cloud during integration (full cloud only at the end)
-            self._fire_on_frame(i, total, self.reference_pcd, 1.0, 0.0, 'OK')
+            depth_validity = float(valid_depth_count) / float(depth_masked.size)
+            self.succeed_list.append({'frame': i, 'fitness': depth_validity, 'rmse': None,
+                                      'note': 'known-pose TSDF; metric=depth_validity'})
+            # Pass empty cloud during integration (full cloud only at the end).
+            # TSDF mode has no ICP fitness/RMSE, so the fitness slot carries
+            # per-frame depth validity instead of fake registration metrics.
+            self._fire_on_frame(i, total, self.reference_pcd,
+                                depth_validity, float('nan'), 'INTEGRATED')
 
             if i % 10 == 0 or i == total - 1:
                 print(f'[reconstructor] TSDF {i + 1:4d}/{total}')
@@ -274,10 +287,14 @@ class Reconstructor:
         self.reference_pcd = volume.extract_point_cloud()
         pts_before = len(self.reference_pcd.points)
 
-        # Strip boundary noise (single-observation sparse-depth edges) from the
-        # extracted cloud. No voxel downsample -- TSDF already gave us the
-        # right resolution.
-        self.reference_pcd = clean_pcd_for_registration(self.reference_pcd)
+        # TSDF already fused depth noise; use the lenient final-output cleaner.
+        # The registration cleaner is too aggressive for thin plant geometry.
+        self.reference_pcd = clean_pcd(
+            self.reference_pcd,
+            nb_neighbors=30,
+            std_ratio=2.0,
+            voxel_size=self.tsdf_voxel_m,
+        )
         pts_after = len(self.reference_pcd.points)
         print(f'[reconstructor] Outlier removal: {pts_before:,} -> {pts_after:,} pts')
 

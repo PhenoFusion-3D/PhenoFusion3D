@@ -1,15 +1,19 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QLineEdit, QSpinBox, QFileDialog, QMessageBox
+    QPushButton, QLineEdit, QSpinBox, QFileDialog, QMessageBox,
+    QDoubleSpinBox, QComboBox, QGroupBox, QFormLayout
 )
-from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtCore import pyqtSignal
 import os
 
 
 class DataPanel(QWidget):
 
-    run_requested  = pyqtSignal(str, str, str, int)  # rgb_dir, depth_dir, intrinsics, step
-    stop_requested = pyqtSignal()
+    # rgb_dir, depth_dir, intrinsics, step, gantry_step_m, gantry_axis,
+    # depth_min_mm, depth_trunc_m
+    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float)
+    calibrate_requested = pyqtSignal(str, str, str)
+    stop_requested      = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -38,6 +42,55 @@ class DataPanel(QWidget):
         step_row.addWidget(self.step_spin)
         step_row.addStretch()
         layout.addLayout(step_row)
+
+        # Advanced gantry / depth parameters
+        advanced = QGroupBox('Advanced / Gantry')
+        advanced.setCheckable(True)
+        advanced.setChecked(True)
+        advanced_layout = QFormLayout(advanced)
+        advanced_layout.setContentsMargins(8, 8, 8, 8)
+        advanced_layout.setSpacing(6)
+
+        self.gantry_step_spin = QDoubleSpinBox()
+        self.gantry_step_spin.setRange(0.01, 50.0)
+        self.gantry_step_spin.setDecimals(3)
+        self.gantry_step_spin.setSingleStep(0.01)
+        self.gantry_step_spin.setValue(1.27)
+        self.gantry_step_spin.setSuffix(' mm/frame')
+        self.gantry_step_spin.setToolTip('Gantry travel per original captured frame.')
+        advanced_layout.addRow('Gantry Step:', self.gantry_step_spin)
+
+        self.gantry_axis_combo = QComboBox()
+        self.gantry_axis_combo.addItems([
+            '0 - X (horizontal)',
+            '1 - Y (vertical)',
+        ])
+        self.gantry_axis_combo.setCurrentIndex(0)
+        advanced_layout.addRow('Gantry Axis:', self.gantry_axis_combo)
+
+        self.depth_min_spin = QSpinBox()
+        self.depth_min_spin.setRange(0, 5000)
+        self.depth_min_spin.setValue(0)
+        self.depth_min_spin.setSuffix(' mm')
+        self.depth_min_spin.setToolTip('Discard depth closer than this value. 0 disables near clipping.')
+        advanced_layout.addRow('Depth Min:', self.depth_min_spin)
+
+        self.depth_trunc_spin = QDoubleSpinBox()
+        self.depth_trunc_spin.setRange(0.5, 10.0)
+        self.depth_trunc_spin.setDecimals(2)
+        self.depth_trunc_spin.setSingleStep(0.1)
+        self.depth_trunc_spin.setValue(3.1)
+        self.depth_trunc_spin.setSuffix(' m')
+        self.depth_trunc_spin.setToolTip('Discard depth farther than this value.')
+        advanced_layout.addRow('Depth Trunc:', self.depth_trunc_spin)
+
+        self.calibrate_btn = QPushButton('Calibrate Gantry')
+        self.calibrate_btn.setEnabled(False)
+        self.calibrate_btn.setToolTip('Estimate gantry axis and step from RGB/depth frames.')
+        self.calibrate_btn.clicked.connect(self._on_calibrate)
+        advanced_layout.addRow(self.calibrate_btn)
+
+        layout.addWidget(advanced)
 
         # Run / Stop buttons
         btn_row = QHBoxLayout()
@@ -113,12 +166,17 @@ class DataPanel(QWidget):
         rgb_ok   = bool(self.rgb_edit.text())
         depth_ok = bool(self.depth_edit.text())
         self.run_btn.setEnabled(rgb_ok and depth_ok)
+        self.calibrate_btn.setEnabled(rgb_ok and depth_ok)
 
     def _on_run(self):
         rgb_dir   = self.rgb_edit.text()
         depth_dir = self.depth_edit.text()
         intr_path = self.intr_edit.text()
         step      = self.step_spin.value()
+        gantry_step_m = self.gantry_step_spin.value() / 1000.0
+        gantry_axis   = self.gantry_axis_combo.currentIndex()
+        depth_min_mm  = self.depth_min_spin.value()
+        depth_trunc   = self.depth_trunc_spin.value()
 
         # Quick count check
         import glob
@@ -128,11 +186,24 @@ class DataPanel(QWidget):
             return
 
         self.set_running(True)
-        self.run_requested.emit(rgb_dir, depth_dir, intr_path, step)
+        self.run_requested.emit(
+            rgb_dir, depth_dir, intr_path, step,
+            gantry_step_m, gantry_axis, depth_min_mm, depth_trunc
+        )
+
+    def _on_calibrate(self):
+        rgb_dir   = self.rgb_edit.text()
+        depth_dir = self.depth_edit.text()
+        intr_path = self.intr_edit.text()
+        if not rgb_dir or not depth_dir:
+            QMessageBox.warning(self, 'Missing Data', 'Select RGB and depth folders first.')
+            return
+        self.calibrate_requested.emit(rgb_dir, depth_dir, intr_path)
 
     def set_running(self, running: bool):
         self.run_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+        self.calibrate_btn.setEnabled(not running)
 
     def set_paths(self, rgb_dir: str, depth_dir: str, intrinsics: str = ''):
         """Programmatically populate paths (called after a successful capture)."""
@@ -140,3 +211,8 @@ class DataPanel(QWidget):
         self.depth_edit.setText(depth_dir or '')
         self.intr_edit.setText(intrinsics or '')
         self._validate()
+
+    def set_gantry_params(self, step_m: float, axis: int):
+        """Populate gantry controls from calibration results."""
+        self.gantry_step_spin.setValue(step_m * 1000.0)
+        self.gantry_axis_combo.setCurrentIndex(max(0, min(1, int(axis))))

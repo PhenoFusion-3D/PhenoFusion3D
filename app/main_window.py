@@ -138,7 +138,13 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         # Data panel -> controller
         self.data_panel.run_requested.connect(self.controller.on_run_clicked)
-        self.data_panel.run_requested.connect(self.controller.on_quality_paths)
+        self.data_panel.run_requested.connect(
+            lambda rgb, depth, intr, step, *_: self.controller.on_quality_paths(
+                rgb, depth, intr, step
+            )
+        )
+        self.data_panel.calibrate_requested.connect(self.controller.on_calibrate_requested)
+        self.controller.calibration_done.connect(self.data_panel.set_gantry_params)
         self.data_panel.stop_requested.connect(self.controller.on_stop_clicked)
 
         # Capture panel -> controller -> capture panel

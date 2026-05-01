@@ -1,6 +1,19 @@
+import math
 import os
 import csv
 import open3d as o3d
+
+
+def _fmt_metric(value, decimals=6):
+    """Format a fitness/RMSE metric for CSV.  None or NaN → empty string."""
+    if value is None:
+        return ''
+    try:
+        if math.isnan(value):
+            return ''
+    except TypeError:
+        return ''
+    return round(value, decimals)
 
 
 def save_ply(pcd, output_path):
@@ -43,8 +56,8 @@ def save_metrics_csv(metrics_list, output_path):
                 writer.writerow({
                     'frame':   row.get('frame', ''),
                     'status':  row.get('status', 'OK'),
-                    'fitness': round(row.get('fitness', 0.0), 6),
-                    'rmse':    round(row.get('rmse', 0.0), 6),
+                    'fitness': _fmt_metric(row.get('fitness')),
+                    'rmse':    _fmt_metric(row.get('rmse')),
                     'note':    row.get('reason', '')
                 })
         print(f'[exporter] CSV saved: {output_path} ({len(metrics_list)} rows)')
