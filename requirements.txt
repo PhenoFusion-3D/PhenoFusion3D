@@ -15,6 +15,7 @@ tqdm>=4.66.0
 PyQt5>=5.15.0
 pyqtgraph>=0.13.0
 matplotlib>=3.8.0
+scipy>=1.11.0
 
 # --- Camera capture (RealSense USB; Windows + pip-based Linux) ---
 # Omit this line only if you will never use in-app capture and only load
@@ -34,3 +35,4 @@ pyrealsense2>=2.54.0
 # pip install -e ".[dev]"   or uncomment:
 # pytest>=7.4.0
 # ruff>=0.4.0
+# Pygments>=2.16.0

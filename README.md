@@ -1,6 +1,6 @@
 # PhenoFusion3D
 
-Python tools for **RGB-D–based 3D reconstruction**: turn paired colour and depth images into coloured point clouds, align successive frames with ICP, and merge them into a single model. The project targets phenotyping / plant-imaging workflows (ANU COMP8715 Technical Team Project).
+Python tools for **RGB-D–based 3D reconstruction**: turn paired colour and depth images into coloured point clouds, align successive frames with ICP, and merge them into a single model. The project targets phenotyping / plant-imaging workflows (ANU COMP8715 Technical Team Project). A **PyQt desktop app** handles capture, quality checks, and interactive reconstruction; the same codebase also exposes a **headless CLI** for plant-canopy batch runs and local RGB-D fusion (`python main.py --help`).
 
 ## Prerequisites
 
@@ -29,7 +29,45 @@ Launch the app:
 python main.py
 ```
 
+With arguments, `main.py` runs batch reconstruction instead of opening the GUI (`python main.py --help`). The notebook-oriented canopy and local-merge logic is also documented in `docs/canopy_reconstruction_notes.md` (English) and `docs/canopy_reconstruction_notes_zh.md` (Chinese).
+
 Do not commit large datasets or generated point clouds; see `.gitignore` (`data/`, `*.ply`, `*.pcd`, etc.).
+
+## CLI: plant canopy reconstruction
+
+`rs_data_5` is a rail/conveyor-style capture: each record contains the target large-leaf plant plus other objects that pass through the fixed top-down camera. For this data, the plant-focused canopy mode is the default. It automatically segments the green leaf canopy when no `reconstruction/masks/` folder is present, selects the large target-plant frames, compensates the plant's image-plane rail motion, fuses the depth on an expanded canvas, and exports a coloured surface.
+
+```bash
+python main.py --input rs_data_5 --max-frames 11 --coverage-threshold 1
+```
+
+This writes one output folder per record under `rs_data_5/canopy_batch/`: `canopy_points.ply`, `canopy_mesh.ply`, `canopy_viewer.html`, `fused_rgb_masked.png`, `fused_mask.png` / `auto_masks/`, previews, and `canopy_summary.json`. Use `--mask-dir` for hand-made masks, or point `--input` at a single record subfolder.
+
+## CLI: local RGB-D reconstruction
+
+Input folders should contain `rgb_*.png`, `depth_*.png`, and ideally `kdc_intrinsics.txt` or `kd_intrinsics.txt`.
+
+```bash
+python main.py --mode rgbd --input test_plant_rs13_1 --step-size 24 --max-frames 12
+```
+
+Optional frame window and green-only merge:
+
+```bash
+python main.py --mode rgbd --input test_plant_rs13_1 --step-size 12 --start-index 220 --end-index 340 --green-filter
+```
+
+Default output layout: `<input>/reconstruction_local/` with `merge_pcd_cam*.ply`, `pose/`, and `reconstruction_summary.json`.
+
+## CLI: mask-guided canopy
+
+For datasets with `reconstruction/masks/mask_*.png`:
+
+```bash
+python main.py --mode canopy --input test_plant_rs13_1 --output-dir test_plant_rs13_1/canopy_local
+```
+
+Outputs include `canopy_points.ply`, `canopy_mesh.ply`, `canopy_viewer.html`, masked RGB, previews, and `canopy_summary.json`.
 
 ## Capture (in-app)
 
@@ -99,7 +137,8 @@ Use **`--move`** instead of copy if you want to remove the flat `rgb_*` / `depth
 | `data/` | Local RGB-D sequences (gitignored; keep datasets here, e.g. `data/icl_nuim/`, `data/main/`) |
 | `scripts/reorganize_to_icl_layout.py` | CLI: convert stakeholder flat `rgb_*`/`depth_*` layout → `rgb/N.png`, `depth/N.png` + `kdc_intrinsics.txt` |
 | `scripts/reorganize_data_main.py` | Wrapper: batch that for each subfolder of `data/main` |
-| `app/`, `main.py`, `visualiser/` | Reserved for a future PyQt-style UI; entry points may still be empty stubs |
+| `app/`, `main.py`, `visualiser/` | PyQt **MainWindow** + Open3D live viewer; `main.py` with CLI args runs headless reconstruction |
+| `processing/canopy.py` | **Canopy** reconstruction config + `reconstruct_canopy` (CLI and batch) |
 
 ## Data conventions
 
@@ -146,7 +185,7 @@ Typical real-data usage: **`pairs = load_image_pairs(rgb_dir, depth_dir, step=1)
 
 ## Dependencies (summary)
 
-Declared in `requirements.txt`: Open3D, OpenCV, NumPy, natsort, tqdm, PyQt5, pyqtgraph, matplotlib, pyrealsense2 (camera capture). Developer extras (`pytest`, `ruff`) are in `pyproject.toml` under `[project.optional-dependencies] dev`. Optional acceleration paths (e.g. CuPy) are referenced in `processing/utils.py` but are not required for the core tests.
+Declared in `requirements.txt`: Open3D, OpenCV, NumPy, SciPy, natsort, tqdm, PyQt5, pyqtgraph, matplotlib, pyrealsense2 (camera capture). Developer extras (`pytest`, `ruff`) are in `pyproject.toml` under `[project.optional-dependencies] dev`. Optional acceleration paths (e.g. CuPy) are referenced in `processing/utils.py` but are not required for the core tests.
 
 ## Contributing tips
 

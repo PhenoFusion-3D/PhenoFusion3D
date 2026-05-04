@@ -4,6 +4,19 @@ import math
 import numpy as np
 from natsort import natsorted
 import glob
+import re
+
+
+def _filter_numbered_pngs(paths, prefix):
+    pattern = re.compile(rf'{re.escape(prefix)}_(\d+)\.png$')
+    matched = []
+    for path in paths:
+        name = os.path.basename(path)
+        found = pattern.match(name)
+        if found:
+            matched.append((int(found.group(1)), path))
+    matched.sort(key=lambda item: item[0])
+    return [path for _, path in matched]
 
 
 GANTRY_CONFIG_FILENAME = 'gantry_config.json'
@@ -18,9 +31,13 @@ def load_image_pairs(rgb_dir, depth_dir, step=1):
       - ICL-NUIM format:    0.png, 1.png, 2.png ...
     Returns a list of (rgb_path, depth_path) tuples sampled at 'step' interval.
     """
-    # Try prefixed format first (stakeholder convention)
-    rgb_files   = natsorted(glob.glob(os.path.join(rgb_dir,   'rgb_*.png')))
-    depth_files = natsorted(glob.glob(os.path.join(depth_dir, 'depth_*.png')))
+    # Prefer strict rgb_N / depth_N pairing when filenames are numeric tokens.
+    rgb_files = _filter_numbered_pngs(glob.glob(os.path.join(rgb_dir, 'rgb_*.png')), 'rgb')
+    depth_files = _filter_numbered_pngs(glob.glob(os.path.join(depth_dir, 'depth_*.png')), 'depth')
+    if not rgb_files:
+        rgb_files = natsorted(glob.glob(os.path.join(rgb_dir, 'rgb_*.png')))
+    if not depth_files:
+        depth_files = natsorted(glob.glob(os.path.join(depth_dir, 'depth_*.png')))
 
     # Fall back to plain numbered PNGs (ICL-NUIM convention)
     if not rgb_files:

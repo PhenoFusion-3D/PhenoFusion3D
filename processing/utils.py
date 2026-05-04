@@ -1,5 +1,6 @@
 import numpy as np
 import open3d as o3d
+import cv2
 
 
 def clean_pcd(pcd, nb_neighbors=30, std_ratio=1.5, voxel_size=0.005):
@@ -56,6 +57,29 @@ def estimate_normals(pcd, radius=0.01, max_nn=30):
     )
     pcd.orient_normals_consistent_tangent_plane(k=10)
     return pcd
+
+
+def green_filter_pcd(pcd, h_range=(35, 90), s_min=0.2, v_min=0.08):
+    """
+    Keep only green-ish points from a coloured point cloud.
+    Useful for isolating foliage from trays, boards, rails, and floor.
+    """
+    if pcd is None or pcd.is_empty() or not pcd.has_colors():
+        return pcd
+
+    colors = np.asarray(pcd.colors)
+    points = np.asarray(pcd.points)
+    bgr = (colors[:, ::-1] * 255).astype(np.uint8).reshape(-1, 1, 3)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    h = hsv[:, 0]
+    s = hsv[:, 1] / 255.0
+    v = hsv[:, 2] / 255.0
+    mask = (h >= h_range[0]) & (h <= h_range[1]) & (s >= s_min) & (v >= v_min)
+
+    filtered = o3d.geometry.PointCloud()
+    filtered.points = o3d.utility.Vector3dVector(points[mask])
+    filtered.colors = o3d.utility.Vector3dVector(colors[mask])
+    return filtered
 
 
 def check_gpu():
