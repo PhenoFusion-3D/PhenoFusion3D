@@ -11,7 +11,7 @@ from natsort import natsorted
 from file_io.loader import load_intrinsics
 from processing.rgbd import rgbd2pcd
 
-SEQ_ROOT   = "data/main/test_plant_rs13_1"
+SEQ_ROOT   = "data/main/test_plant_20230809133659"  # best new dataset (1.3M pts)
 INTRINSICS = os.path.join(SEQ_ROOT, "kdc_intrinsics.txt")
 rgb_dir    = os.path.join(SEQ_ROOT, "rgb")
 depth_dir  = os.path.join(SEQ_ROOT, "depth")
@@ -95,13 +95,15 @@ elif MODE == 4:
                    depth_scale=1000.0, depth_trunc=3.2, depth_min_mm=300)
     title = "MODE 4: +dist +bbox +near-clip"
 
-# MODE 5: Full production parameters (same as test_with_whole_seq.py)
+# MODE 5: Full production parameters (matches test_with_whole_seq.py for new datasets)
+# For rs13_1: depth_trunc=3.1, depth_min_mm=2000
+# For 20230809133659/133757: depth_trunc=3.0, depth_min_mm=1900
 elif MODE == 5:
     pcd = rgbd2pcd(color, depth, K, dist=dist,
                    bbox=[300, 100, 980, 670],
-                   depth_scale=1000.0, depth_trunc=3.1, depth_min_mm=2000,
+                   depth_scale=1000.0, depth_trunc=3.0, depth_min_mm=1900,
                    mask_background=True, bg_sat_thresh=40)
-    title = "MODE 5: production params + bg mask"
+    title = "MODE 5: production params + bg mask (new datasets)"
 
 else:
     raise SystemExit(f"Unknown MODE={MODE}")

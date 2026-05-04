@@ -142,9 +142,12 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         # Data panel -> controller
         self.data_panel.run_requested.connect(self.controller.on_run_clicked)
+        # Mirror DataPanel state to controller for Quality Check (mask_bg and tsdf_voxel
+        # are reconstruction-only; quality path sync only needs the first 10 params).
         self.data_panel.run_requested.connect(
             lambda rgb, depth, intr, step, gantry_step, axis, depth_min,
-                   depth_trunc, bbox, feature_init, use_tsdf: self.controller.on_quality_paths(
+                   depth_trunc, bbox, feature_init, use_tsdf,
+                   mask_bg, tsdf_voxel: self.controller.on_quality_paths(
                 rgb, depth, intr, step, gantry_step, axis, depth_min,
                 depth_trunc, bbox, feature_init
             )

@@ -28,8 +28,16 @@ from processing.reconstructor import Reconstructor
 
 # ---------------------------------------------------------------------------
 # Paths
+# Change SEQ_ROOT to point at any dataset under data/main:
+#   "data/main/test_plant_rs13_1"           -- reference (161 frames, 2.8m depth)
+#   "data/main/test_plant_20230809133659"   -- best new dataset (1.3M pts)
+#   "data/main/test_plant_20230809133757"   -- second best  (1.27M pts)
+#   "data/main/test_plant_20230809132913"   -- 913K pts
+#   "data/main/test_plant_20230809132457"   -- 830K pts
+#   "data/main/test_plant_20230809134126"   -- 542K pts (close-range setup)
+#   "data/main/test_plant_20230809134757"   -- 577K pts (close-range setup)
 # ---------------------------------------------------------------------------
-SEQ_ROOT       = "data/main/test_plant_rs13_1"
+SEQ_ROOT       = "data/main/test_plant_20230809133659"
 rgb_dir        = os.path.join(SEQ_ROOT, "rgb")
 depth_dir      = os.path.join(SEQ_ROOT, "depth")
 intrinsics_path = os.path.join(SEQ_ROOT, "kdc_intrinsics.txt")
@@ -54,21 +62,24 @@ USE_KNOWN_POSES = True   # True = TSDF + kinematics; False = ICP
 #                      Loaded from gantry_config.json when available.
 # ---------------------------------------------------------------------------
 GANTRY_AXIS   = 1
-GANTRY_STEP_M = 0.0016    # metres per original frame
+GANTRY_STEP_M = 0.003476  # metres per original frame (calibrated for 20230809133659)
+                           # Override per dataset: rs13_1=0.0016, 20230809133659=0.003476
 
 # ---------------------------------------------------------------------------
 # Depth / reconstruction parameters
+# Tuned for test_plant_20230809133659 (plant at 2500-2900 mm, gantry arm at 1500-1800 mm)
+# For close-range datasets (20230809134126/134757): use depth_min_mm=1300, depth_trunc=2.2
 # ---------------------------------------------------------------------------
 DEPTH_SCALE  = 1000.0
-DEPTH_TRUNC  = 3.1        # metres -- plant at ~2.82 m; exclude background wall
+DEPTH_TRUNC  = 3.0        # metres -- exclude far background (>3.0 m)
 VOXEL_SIZE   = 0.005      # ICP radius and output downsample (ICP mode)
 MAX_ITER     = 80         # ICP iterations per frame pair (ICP mode)
-TSDF_VOXEL_M = 0.015      # 15 mm TSDF voxels: appropriate for D405 noise at 2.8 m
+TSDF_VOXEL_M = 0.005      # 5 mm TSDF voxels: matches D405 noise floor at 2.8 m
 BBOX         = [300, 100, 980, 670]  # Plant ROI; excludes rails that dominate ICP/TSDF
-DEPTH_MIN_MM = 2000       # Clip near-side returns; keep the 2.0-3.1 m plant slab
+DEPTH_MIN_MM = 1900       # Clip near gantry arm (<1.9 m); keep 1.9-3.0 m plant slab
 ERODE        = False
 INPAINT      = False
-MASK_BACKGROUND = True    # Strip white/grey background card before TSDF/ICP
+MASK_BACKGROUND = True    # Strip white/grey background card / gantry surfaces
 BG_SAT_THRESH   = 40      # HSV saturation: pixels below this are background
 
 save_path = os.path.join(SEQ_ROOT, "output")

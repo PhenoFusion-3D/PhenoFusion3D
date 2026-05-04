@@ -29,28 +29,34 @@ class ProcessingWorker(QThread):
         max_rmse=0.015,
         save_path=None,
         agent_config=None,
+        mask_background=False,
+        bg_sat_thresh=40,
+        plant_icp=False,
     ):
         super().__init__()
-        self.pairs           = pairs
-        self.K               = K
-        self.dist            = dist
-        self.depth_scale     = depth_scale
-        self.depth_trunc     = depth_trunc
-        self.voxel_size      = voxel_size
-        self.max_iter        = max_iter
-        self.bbox            = bbox
-        self.gantry_step_m   = gantry_step_m
-        self.gantry_axis     = gantry_axis
-        self.depth_min_mm    = depth_min_mm
-        self.erode           = erode
-        self.inpaint         = inpaint
-        self.use_known_poses = use_known_poses
-        self.tsdf_voxel_m    = tsdf_voxel_m
-        self.min_fitness     = min_fitness
-        self.max_rmse        = max_rmse
-        self.save_path       = save_path
-        self.agent_config    = agent_config
-        self._reconstructor  = None
+        self.pairs            = pairs
+        self.K                = K
+        self.dist             = dist
+        self.depth_scale      = depth_scale
+        self.depth_trunc      = depth_trunc
+        self.voxel_size       = voxel_size
+        self.max_iter         = max_iter
+        self.bbox             = bbox
+        self.gantry_step_m    = gantry_step_m
+        self.gantry_axis      = gantry_axis
+        self.depth_min_mm     = depth_min_mm
+        self.erode            = erode
+        self.inpaint          = inpaint
+        self.use_known_poses  = use_known_poses
+        self.tsdf_voxel_m     = tsdf_voxel_m
+        self.min_fitness      = min_fitness
+        self.max_rmse         = max_rmse
+        self.save_path        = save_path
+        self.agent_config     = agent_config
+        self.mask_background  = mask_background
+        self.bg_sat_thresh    = bg_sat_thresh
+        self.plant_icp        = plant_icp
+        self._reconstructor   = None
 
     def run(self):
         try:
@@ -74,6 +80,9 @@ class ProcessingWorker(QThread):
                 max_rmse=self.max_rmse,
                 save_path=self.save_path,
                 agent_config=self.agent_config,
+                mask_background=self.mask_background,
+                bg_sat_thresh=self.bg_sat_thresh,
+                plant_icp=self.plant_icp,
                 on_frame=self._on_frame,
             )
             final_pcd, succeed, fail = self._reconstructor.run()
