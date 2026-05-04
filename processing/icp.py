@@ -1,73 +1,101 @@
-import open3d as o3d
+import copy
+
 import numpy as np
+import open3d as o3d
 
 
-def color_icp(source, target, max_iter=50, voxel_size=0.005):
+def _prepare_for_registration(pcd, voxel_size):
+    prepared = copy.deepcopy(pcd)
+    if voxel_size > 0:
+        prepared = prepared.voxel_down_sample(voxel_size)
+    if prepared.is_empty():
+        return prepared
+    prepared.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(
+            radius=max(voxel_size * 2.0, 0.01),
+            max_nn=30,
+        )
+    )
+    return prepared
+
+
+def color_icp(source, target, max_iter=50, voxel_size=0.005, max_correspondence_distance=None):
     """
     Colour-assisted ICP registration between two point clouds.
-    Both source and target must have colour data.
-
-    Returns: (result, transformation, fitness, inlier_rmse)
-    Falls back to point_to_plane_icp if colour ICP fails.
+    Falls back to point-to-plane ICP when coloured ICP is unavailable or unstable.
     """
     if source.is_empty() or target.is_empty():
         print('[icp] WARNING: Empty point cloud passed to color_icp, skipping.')
         identity = np.eye(4)
         return None, identity, 0.0, 0.0
 
-    radius = voxel_size * 2
+    max_distance = max_correspondence_distance or max(voxel_size * 10.0, 0.02)
+    source_prepared = _prepare_for_registration(source, voxel_size)
+    target_prepared = _prepare_for_registration(target, voxel_size)
+
+    if source_prepared.is_empty() or target_prepared.is_empty():
+        identity = np.eye(4)
+        return None, identity, 0.0, 0.0
 
     try:
         result = o3d.pipelines.registration.registration_colored_icp(
-            source, target,
-            radius,
-            criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
-                max_iteration=max_iter
-            )
+            source_prepared,
+            target_prepared,
+            max_distance,
+            np.eye(4),
+            o3d.pipelines.registration.TransformationEstimationForColoredICP(),
+            o3d.pipelines.registration.ICPConvergenceCriteria(
+                relative_fitness=1e-6,
+                relative_rmse=1e-6,
+                max_iteration=max_iter,
+            ),
         )
-        fitness = result.fitness
-        inlier_rmse = result.inlier_rmse
-
-        # If colour ICP gives no result, fall back
-        if fitness == 0.0:
+        if result.fitness == 0.0:
             print('[icp] colour_icp fitness=0, falling back to point-to-plane ICP')
-            return point_to_plane_icp(source, target, max_iter, voxel_size)
+            return point_to_plane_icp(
+                source,
+                target,
+                max_iter=max_iter,
+                voxel_size=voxel_size,
+                max_correspondence_distance=max_distance,
+            )
+        return result, result.transformation, result.fitness, result.inlier_rmse
+    except Exception as exc:
+        print(f'[icp] colour_icp failed ({exc}), falling back to point-to-plane ICP')
+        return point_to_plane_icp(
+            source,
+            target,
+            max_iter=max_iter,
+            voxel_size=voxel_size,
+            max_correspondence_distance=max_distance,
+        )
 
-        return result, result.transformation, fitness, inlier_rmse
 
-    except Exception as e:
-        print(f'[icp] colour_icp failed ({e}), falling back to point-to-plane ICP')
-        return point_to_plane_icp(source, target, max_iter, voxel_size)
-
-
-def point_to_plane_icp(source, target, max_iter=50, voxel_size=0.005):
+def point_to_plane_icp(source, target, max_iter=50, voxel_size=0.005, max_correspondence_distance=None):
     """
-    Point-to-plane ICP fallback. Estimates normals if not present.
-
-    Returns: (result, transformation, fitness, inlier_rmse)
+    Point-to-plane ICP fallback. Estimates normals on working copies.
     """
     if source.is_empty() or target.is_empty():
         identity = np.eye(4)
         return None, identity, 0.0, 0.0
 
-    radius = voxel_size * 2
+    max_distance = max_correspondence_distance or max(voxel_size * 10.0, 0.02)
+    source_prepared = _prepare_for_registration(source, voxel_size)
+    target_prepared = _prepare_for_registration(target, voxel_size)
 
-    # Estimate normals if missing
-    for pcd in [source, target]:
-        if not pcd.has_normals():
-            pcd.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                    radius=radius, max_nn=30
-                )
-            )
+    if source_prepared.is_empty() or target_prepared.is_empty():
+        identity = np.eye(4)
+        return None, identity, 0.0, 0.0
 
     result = o3d.pipelines.registration.registration_icp(
-        source, target,
-        max_correspondence_distance=radius,
+        source_prepared,
+        target_prepared,
+        max_correspondence_distance=max_distance,
+        init=np.eye(4),
         estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane(),
         criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
-            max_iteration=max_iter
-        )
+            max_iteration=max_iter,
+        ),
     )
 
     return result, result.transformation, result.fitness, result.inlier_rmse

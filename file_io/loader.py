@@ -3,6 +3,19 @@ import json
 import numpy as np
 from natsort import natsorted
 import glob
+import re
+
+
+def _filter_numbered_pngs(paths, prefix):
+    pattern = re.compile(rf'{re.escape(prefix)}_(\d+)\.png$')
+    matched = []
+    for path in paths:
+        name = os.path.basename(path)
+        found = pattern.match(name)
+        if found:
+            matched.append((int(found.group(1)), path))
+    matched.sort(key=lambda item: item[0])
+    return [path for _, path in matched]
 
 
 def load_image_pairs(rgb_dir, depth_dir, step=1):
@@ -10,8 +23,8 @@ def load_image_pairs(rgb_dir, depth_dir, step=1):
     Load sorted RGB + depth image path pairs from two directories.
     Returns a list of (rgb_path, depth_path) tuples, sampled at 'step' interval.
     """
-    rgb_files = natsorted(glob.glob(os.path.join(rgb_dir, 'rgb_*.png')))
-    depth_files = natsorted(glob.glob(os.path.join(depth_dir, 'depth_*.png')))
+    rgb_files = _filter_numbered_pngs(glob.glob(os.path.join(rgb_dir, 'rgb_*.png')), 'rgb')
+    depth_files = _filter_numbered_pngs(glob.glob(os.path.join(depth_dir, 'depth_*.png')), 'depth')
 
     # Fallback: if no rgb_*.png found, try any PNG
     if not rgb_files:

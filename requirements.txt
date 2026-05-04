@@ -6,4 +6,6 @@ tqdm>=4.66.0
 PyQt5>=5.15.0
 pyqtgraph>=0.13.0
 matplotlib>=3.8.0
+scipy>=1.11.0
 pytest>=7.4.0
+Pygments>=2.16.0
