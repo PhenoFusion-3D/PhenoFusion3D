@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
@@ -61,12 +61,17 @@ class AgentConfig:
     # Recovery:
     max_retries: int = 5
     # Ordered strategy names. 'feature_init' is heavy; off by default.
+    # 'stronger_downsample', 'looser_correspondence', 'fpfh_ransac_then_colored'
+    # are ported from the experiment pipeline for additional recovery coverage.
     strategies: tuple = (
         'tighter_crop',
         'voxel_downsample',
         'denoise',
         'reseed_init',
+        'stronger_downsample',
+        'looser_correspondence',
         'point_to_plane',
+        'fpfh_ransac_then_colored',
         'feature_init',
     )
     enable_feature_init: bool = False
@@ -76,12 +81,18 @@ class AgentConfig:
     # NOT advancing `last_transform` until a frame is accepted again.
     fallback_after_rejects: int = 3
 
+    # TSDF mode depth-gating. These thresholds operate on the fraction of
+    # valid depth pixels after the same crop/range mask used for integration.
+    min_depth_validity: float = 0.10
+    warn_depth_validity: float = 0.25
+    min_tsdf_points: int = 500
+
 
 # ---------------------------------------------------------------- decision
 
 @dataclass
 class FrameDecision:
-    action: str                     # 'accept' | 'retry' | 'reject'
+    action: str                     # 'accept' | 'warn' | 'retry' | 'reject'
     reason: str = ''
     next_strategy: Optional[str] = None
     # Diagnostic snapshot of the thresholds that were active.
@@ -241,6 +252,53 @@ class RegistrationAgent:
             reason=reason,
             fitness_threshold=min_fit,
             rmse_threshold=max_rmse,
+        )
+
+    # ------------------------------------------------------------- TSDF
+
+    def judge_tsdf_frame(self, depth_validity: float, n_points: int) -> FrameDecision:
+        """
+        Judge whether a known-pose TSDF frame has enough depth signal to fuse.
+
+        This complements ICP registration checks for the gantry/TSDF path,
+        where pose is known but bad depth frames can still pollute the volume.
+        """
+        cfg = self.config
+        validity = float(depth_validity)
+        points = int(n_points)
+
+        if points <= 0 or validity <= 0.0:
+            return FrameDecision(
+                action='reject',
+                reason='no valid depth',
+                fitness_threshold=cfg.min_depth_validity,
+            )
+
+        if validity < cfg.min_depth_validity or points < cfg.min_tsdf_points:
+            return FrameDecision(
+                action='reject',
+                reason=(
+                    f'depth validity {validity * 100:.1f}% < '
+                    f'{cfg.min_depth_validity * 100:.1f}% or '
+                    f'points {points} < {cfg.min_tsdf_points}'
+                ),
+                fitness_threshold=cfg.min_depth_validity,
+            )
+
+        if validity < cfg.warn_depth_validity:
+            return FrameDecision(
+                action='warn',
+                reason=(
+                    f'depth validity {validity * 100:.1f}% < '
+                    f'{cfg.warn_depth_validity * 100:.1f}%'
+                ),
+                fitness_threshold=cfg.warn_depth_validity,
+            )
+
+        return FrameDecision(
+            action='accept',
+            reason=f'depth validity {validity * 100:.1f}%, points={points}',
+            fitness_threshold=cfg.warn_depth_validity,
         )
 
     # ---------------------------------------------------------- recovery
@@ -407,6 +465,33 @@ def apply_strategy(
             o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999),
         )
         init = np.asarray(result.transformation, dtype=float).copy()
+
+    elif strategy == 'stronger_downsample':
+        # Downsample more aggressively (1.5x voxel size) to smooth noise and
+        # extend the ICP convergence basin.
+        ds = max(1.5 * voxel_size, 1e-4)
+        src = source.voxel_down_sample(ds)
+        tgt = target.voxel_down_sample(ds)
+        kwargs['voxel_size'] = ds
+        kwargs['max_iter'] = 150
+
+    elif strategy == 'looser_correspondence':
+        # Widen the ICP correspondence radius to 8x voxel_size.
+        # Helps when the initial misalignment is larger than the default 4x radius.
+        kwargs['max_iter'] = 150
+        # Signal the larger correspondence distance via a custom key; callers
+        # that use color_icp() must forward this as max_correspondence_distance.
+        kwargs['max_correspondence_distance'] = voxel_size * 8.0
+
+    elif strategy == 'fpfh_ransac_then_colored':
+        # Global FPFH+RANSAC pre-alignment followed by coloured ICP refinement.
+        # Most expensive strategy — last resort before rejecting the frame.
+        from processing.icp import fpfh_ransac_initial_transform
+        _ransac_result, ransac_tf, _fit, _rmse = fpfh_ransac_initial_transform(
+            source, target, voxel_size=voxel_size * 2.0
+        )
+        init = np.asarray(ransac_tf, dtype=float).copy()
+        kwargs['max_iter'] = 200
 
     else:
         raise ValueError(f'Unknown recovery strategy: {strategy!r}')

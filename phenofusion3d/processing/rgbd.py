@@ -6,7 +6,8 @@ import cv2
 import open3d as o3d
 
 
-def rgbd2pcd(color_img, depth_img, K, dist=None, bbox=None, depth_scale=1000.0):
+def rgbd2pcd(color_img, depth_img, K, dist=None, bbox=None, depth_scale=1000.0,
+             depth_trunc=3.5):
     """
     Create point cloud from RGB and depth images.
 
@@ -17,6 +18,7 @@ def rgbd2pcd(color_img, depth_img, K, dist=None, bbox=None, depth_scale=1000.0):
         dist: distortion coefficients (optional). If provided, undistort before conversion.
         bbox: [x1, y1, x2, y2] crop region or None
         depth_scale: converts raw depth pixel values to metres. 1000 for RealSense mm.
+        depth_trunc: discard depth farther than this many metres.
 
     Returns:
         o3d.geometry.PointCloud with colour
@@ -47,7 +49,7 @@ def rgbd2pcd(color_img, depth_img, K, dist=None, bbox=None, depth_scale=1000.0):
         color_o3d,
         depth_o3d,
         depth_scale=depth_scale,
-        depth_trunc=3.0,
+        depth_trunc=depth_trunc,
         convert_rgb_to_intensity=False,
     )
 

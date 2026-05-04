@@ -11,6 +11,7 @@ from app.quality_worker import QualityWorker
 from capture          import CaptureParams
 from capture.gantry   import GantryController
 from processing.quality import QualityParams, QualityThresholds
+from processing.registration_agent import AgentConfig
 from visualiser.viewer import PointCloudViewer
 
 
@@ -56,16 +57,24 @@ class Controller(QObject):
         self._last_rgb_dir   = None
         self._last_depth_dir = None
         self._last_intr_path = None
+        self._last_step_size = 1
+        self._last_gantry_step_m_per_frame = 0.00127
+        self._last_gantry_axis = 0
+        self._last_depth_min_mm = 0
+        self._last_depth_trunc = 3.5
+        self._last_bbox = None
+        self._last_enable_feature_init = False
 
         # Gantry controller -- ROS init is deferred to first call so this
         # is cheap on Windows / non-ROS hosts.
         self.gantry = GantryController()
 
     # ---------------------------------------------------------------- run
-    @pyqtSlot(str, str, str, int, float, int, int, float)
+    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool)
     def on_run_clicked(self, rgb_dir, depth_dir, intrinsics_path, step_size,
                        gantry_step_m_per_frame, gantry_axis,
-                       depth_min_mm, depth_trunc):
+                       depth_min_mm, depth_trunc, bbox, enable_feature_init,
+                       use_tsdf=False):
         self.n_success   = 0
         self.n_fail      = 0
         self.all_metrics = []
@@ -86,27 +95,46 @@ class Controller(QObject):
         self._last_rgb_dir   = rgb_dir
         self._last_depth_dir = depth_dir
         self._last_intr_path = intrinsics_path
+        self._last_step_size = step_size
+        self._last_gantry_step_m_per_frame = gantry_step_m_per_frame
+        self._last_gantry_axis = gantry_axis
+        self._last_depth_min_mm = depth_min_mm
+        self._last_depth_trunc = depth_trunc
+        self._last_bbox = bbox
+        self._last_enable_feature_init = enable_feature_init
 
         self.status_changed.emit(f'Starting reconstruction: {len(pairs)} frames...')
 
         is_icl = 'icl' in rgb_dir.lower()
 
         depth_scale = 5000.0 if is_icl else 1000.0
-        voxel_size  = 0.02   if is_icl else 0.005
-
         max_iter     = 30    if is_icl else 80
-        bbox         = None  if is_icl else None
         erode        = True  if is_icl else False
         inpaint      = True  if is_icl else False
 
-        # TSDF + kinematic poses is the correct mode for gantry data:
-        # the camera moves <1 pixel between consecutive frames at 2.8 m depth,
-        # so ICP converges trivially (fitness≈1, rmse≈0) and cannot distinguish
-        # real frame-to-frame movement from noise.  TSDF uses the exact gantry
-        # encoder displacement instead and produces clean, hole-filled output.
-        use_known_poses = False if is_icl else True
+        # ICP mode: frame-to-frame colour ICP (stakeholder approach, no pose needed).
+        #   voxel_size=0.01 gives ICP correspondence radius ~20mm which is large
+        #   enough to bridge 0.45 px/frame sub-pixel motion at 2.5m depth.
+        #   bbox is intentionally ignored so the full frame (including tray/floor
+        #   background) provides stable ICP anchors.
+        # TSDF mode: kinematic poses from gantry step+axis; needs accurate calibration.
+        use_known_poses = is_icl or use_tsdf
         gantry_step_m   = gantry_step_m_per_frame * step_size
         tsdf_voxel_m    = 0.005   # matches D405 noise floor (~5 mm RMSE) at 2.8 m
+
+        if use_known_poses:
+            voxel_size = 0.02 if is_icl else 0.005
+            icp_bbox   = bbox
+        else:
+            # ICP: wider correspondence radius; full-frame background aids registration
+            voxel_size = 0.02 if is_icl else 0.01
+            icp_bbox   = None
+
+        agent_config = AgentConfig(
+            floor_min_fitness=DEFAULT_MIN_FITNESS,
+            floor_max_rmse=DEFAULT_MAX_RMSE,
+            enable_feature_init=enable_feature_init,
+        )
 
         self.worker = ProcessingWorker(
             pairs=pairs, K=K, dist=dist,
@@ -114,7 +142,7 @@ class Controller(QObject):
             depth_trunc=depth_trunc,
             voxel_size=voxel_size,
             max_iter=max_iter,
-            bbox=bbox,
+            bbox=icp_bbox,
             gantry_step_m=gantry_step_m,
             gantry_axis=gantry_axis,
             depth_min_mm=depth_min_mm,
@@ -124,7 +152,8 @@ class Controller(QObject):
             tsdf_voxel_m=tsdf_voxel_m,
             min_fitness=DEFAULT_MIN_FITNESS,
             max_rmse=DEFAULT_MAX_RMSE,
-            save_path=os.path.join(os.path.dirname(rgb_dir), 'output')
+            save_path=os.path.join(os.path.dirname(rgb_dir), 'output'),
+            agent_config=agent_config,
         )
         self.worker.frame_done.connect(self._on_frame)
         self.worker.finished.connect(self._on_finished)
@@ -132,10 +161,16 @@ class Controller(QObject):
         self.worker.start()
         self.viewer.start()
 
-    @pyqtSlot(str, str, str)
-    def on_calibrate_requested(self, rgb_dir, depth_dir, intrinsics_path):
+    @pyqtSlot(str, str, str, float, int)
+    def on_calibrate_requested(self, rgb_dir, depth_dir, intrinsics_path, velocity_mps, fps):
         self.status_changed.emit('Calibrating gantry motion...')
-        self.calibration_worker = CalibrationWorker(rgb_dir, depth_dir, intrinsics_path)
+        self.calibration_worker = CalibrationWorker(
+            rgb_dir,
+            depth_dir,
+            intrinsics_path,
+            velocity_mps=velocity_mps,
+            fps=fps,
+        )
         self.calibration_worker.done.connect(self._on_calibration_done)
         self.calibration_worker.error.connect(self._on_calibration_error)
         self.calibration_worker.start()
@@ -162,7 +197,7 @@ class Controller(QObject):
 
     @pyqtSlot(int, int, object, float, float, str)
     def _on_frame(self, idx, total, pcd, fitness, rmse, status):
-        if status in ('OK', 'RECOVERED', 'INTEGRATED'):
+        if status in ('OK', 'RECOVERED', 'INTEGRATED', 'WARN'):
             self.n_success += 1
         else:
             self.n_fail += 1
@@ -236,21 +271,40 @@ class Controller(QObject):
         is_icl = 'icl' in rgb_dir.lower()
         return QualityParams(
             depth_scale=5000.0 if is_icl else 1000.0,
-            depth_trunc=4.0,
+            depth_trunc=self._last_depth_trunc,
             voxel_size=0.02 if is_icl else 0.005,
             max_iter=30 if is_icl else 80,
-            depth_min_mm=0,
+            bbox=self._last_bbox,
+            depth_min_mm=self._last_depth_min_mm,
             erode=is_icl,
             inpaint=is_icl,
+            gantry_step_m=self._last_gantry_step_m_per_frame,
+            gantry_axis=self._last_gantry_axis,
             thresholds=QualityThresholds(),
         )
 
-    @pyqtSlot(str, str, str, int)
-    def on_quality_paths(self, rgb_dir, depth_dir, intrinsics_path, step_size):
+    def on_quality_paths(
+        self, rgb_dir, depth_dir, intrinsics_path, step_size,
+        gantry_step_m_per_frame=None, gantry_axis=None,
+        depth_min_mm=None, depth_trunc=None, bbox=None,
+        enable_feature_init=None,
+    ):
         """Capture the most recent DataPanel state for use by Quick/Full check."""
         self._last_rgb_dir   = rgb_dir
         self._last_depth_dir = depth_dir
         self._last_intr_path = intrinsics_path
+        self._last_step_size = step_size
+        if gantry_step_m_per_frame is not None:
+            self._last_gantry_step_m_per_frame = gantry_step_m_per_frame
+        if gantry_axis is not None:
+            self._last_gantry_axis = gantry_axis
+        if depth_min_mm is not None:
+            self._last_depth_min_mm = depth_min_mm
+        if depth_trunc is not None:
+            self._last_depth_trunc = depth_trunc
+        self._last_bbox = bbox
+        if enable_feature_init is not None:
+            self._last_enable_feature_init = enable_feature_init
 
     def _ensure_paths(self) -> tuple | None:
         if not self._last_rgb_dir or not self._last_depth_dir:

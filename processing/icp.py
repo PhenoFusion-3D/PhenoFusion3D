@@ -85,3 +85,53 @@ def point_to_plane_icp(source, target, max_iter=50, voxel_size=0.005, init=None)
     )
 
     return result, result.transformation, result.fitness, result.inlier_rmse
+
+
+def fpfh_ransac_initial_transform(source, target, *, voxel_size=0.01):
+    """
+    Estimate a global source→target rigid transform using FPFH features + RANSAC.
+
+    Useful as a recovery initialisation when ICP has diverged and no kinematic
+    prior is available.  More expensive than ICP — only call as a last resort
+    inside a recovery loop.
+
+    Args:
+        source, target : Open3D PointCloud objects (should already be roughly
+                         co-located within ~0.5 m for best results)
+        voxel_size     : Downsampling voxel size used for feature extraction.
+                         Use ~2x the ICP voxel_size (default 0.01 m = 1 cm).
+
+    Returns: (result, transformation 4×4, fitness, inlier_rmse)
+    """
+    distance_threshold = voxel_size * 4.0
+
+    def _preprocess(pcd):
+        down = pcd.voxel_down_sample(voxel_size)
+        down.estimate_normals(
+            o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2.0, max_nn=30)
+        )
+        feature = o3d.pipelines.registration.compute_fpfh_feature(
+            down,
+            o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 5.0, max_nn=100),
+        )
+        return down, feature
+
+    src_down, src_feature = _preprocess(source)
+    tgt_down, tgt_feature = _preprocess(target)
+
+    result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+        src_down,
+        tgt_down,
+        src_feature,
+        tgt_feature,
+        True,
+        distance_threshold,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+        4,
+        [
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(distance_threshold),
+        ],
+        o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999),
+    )
+    return result, np.asarray(result.transformation).copy(), result.fitness, result.inlier_rmse

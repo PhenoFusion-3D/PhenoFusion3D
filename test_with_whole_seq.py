@@ -23,7 +23,7 @@ sys.path.insert(0, ".")
 import os
 import open3d as o3d
 
-from file_io.loader import load_image_pairs, load_intrinsics
+from file_io.loader import load_gantry_config, load_image_pairs, load_intrinsics
 from processing.reconstructor import Reconstructor
 
 # ---------------------------------------------------------------------------
@@ -51,23 +51,25 @@ USE_KNOWN_POSES = True   # True = TSDF + kinematics; False = ICP
 # Gantry parameters  (run calibrate_gantry.py to refine these)
 #   GANTRY_AXIS      : 0 = camera X (horizontal), 1 = camera Y (vertical)
 #   GANTRY_STEP_M    : per-ORIGINAL-frame displacement in metres
-#                      (~1.27 mm/frame at 38 mm/s, 30 fps)
+#                      Loaded from gantry_config.json when available.
 # ---------------------------------------------------------------------------
-GANTRY_AXIS   = 0
-GANTRY_STEP_M = 0.00127   # metres per original frame
+GANTRY_AXIS   = 1
+GANTRY_STEP_M = 0.0016    # metres per original frame
 
 # ---------------------------------------------------------------------------
 # Depth / reconstruction parameters
 # ---------------------------------------------------------------------------
 DEPTH_SCALE  = 1000.0
-DEPTH_TRUNC  = 3.5        # metres -- scene at ~2.82 m, trim background noise
+DEPTH_TRUNC  = 3.1        # metres -- plant at ~2.82 m; exclude background wall
 VOXEL_SIZE   = 0.005      # ICP radius and output downsample (ICP mode)
 MAX_ITER     = 80         # ICP iterations per frame pair (ICP mode)
-TSDF_VOXEL_M = 0.005      # 5 mm TSDF voxels: matches D405 noise floor at 2.8 m
-BBOX         = None       # No crop -- TSDF benefits from full frame
-DEPTH_MIN_MM = 0          # No near-clip -- keep all valid depth
+TSDF_VOXEL_M = 0.015      # 15 mm TSDF voxels: appropriate for D405 noise at 2.8 m
+BBOX         = [300, 100, 980, 670]  # Plant ROI; excludes rails that dominate ICP/TSDF
+DEPTH_MIN_MM = 2000       # Clip near-side returns; keep the 2.0-3.1 m plant slab
 ERODE        = False
 INPAINT      = False
+MASK_BACKGROUND = True    # Strip white/grey background card before TSDF/ICP
+BG_SAT_THRESH   = 40      # HSV saturation: pixels below this are background
 
 save_path = os.path.join(SEQ_ROOT, "output")
 
@@ -85,6 +87,13 @@ intr = load_intrinsics(intrinsics_path)
 if intr is None:
     raise SystemExit(f"Missing or invalid intrinsics: {intrinsics_path!r}")
 K, dist, _, _ = intr
+
+cfg = load_gantry_config(SEQ_ROOT)
+if cfg:
+    GANTRY_STEP_M, GANTRY_AXIS = cfg
+    print(f"Loaded gantry config: step={GANTRY_STEP_M*1000:.3f} mm/frame, axis={GANTRY_AXIS}")
+else:
+    print(f"Using fallback gantry config: step={GANTRY_STEP_M*1000:.3f} mm/frame, axis={GANTRY_AXIS}")
 
 # ---------------------------------------------------------------------------
 # Per-pair gantry step (CRITICAL: multiply per-frame step by sampling step)
@@ -117,6 +126,8 @@ final_pcd, succeed, fail = Reconstructor(
     use_known_poses=USE_KNOWN_POSES,
     tsdf_voxel_m=TSDF_VOXEL_M,
     bbox=BBOX,
+    mask_background=MASK_BACKGROUND,
+    bg_sat_thresh=BG_SAT_THRESH,
     save_path=save_path,
 ).run()
 

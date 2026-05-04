@@ -48,6 +48,9 @@ class QualityThresholds:
     validity_warn: float = 0.10
     rotation_pass_deg: float = 1.0
     rotation_warn_deg: float = 5.0
+    gantry_step_ratio_warn_low: float = 0.5
+    gantry_step_ratio_warn_high: float = 1.5
+    depth_uniformity_warn: float = 0.20
 
 
 # ---------------------------------------------------------------- params
@@ -62,6 +65,8 @@ class QualityParams:
     depth_min_mm: int = 0
     erode:   bool = False
     inpaint: bool = False
+    gantry_step_m: float = 0.0
+    gantry_axis: int = 0
     thresholds: QualityThresholds = field(default_factory=QualityThresholds)
 
 
@@ -76,6 +81,8 @@ class PairMetrics:
     icp_fitness:    float
     icp_rmse:       float
     rotation_deg:   float
+    measured_step_m: float = 0.0
+    gantry_step_ratio: float = 0.0
     error: str = ''
 
 
@@ -135,17 +142,61 @@ def _rotation_magnitude_deg(T: np.ndarray) -> float:
     return math.degrees(math.acos(cos_t))
 
 
-def _depth_validity(depth: np.ndarray, depth_trunc_mm: float) -> tuple[float, float]:
+def _crop_array(arr: np.ndarray, bbox: Optional[list]) -> np.ndarray:
+    if bbox is None:
+        return arr
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    return arr[y1:y2, x1:x2]
+
+
+def _depth_validity(
+    depth: np.ndarray,
+    depth_trunc_mm: float,
+    depth_min_mm: int = 0,
+    bbox: Optional[list] = None,
+) -> tuple[float, float]:
     """Return (valid_fraction, median_valid_depth_mm)."""
     if depth is None or depth.size == 0:
         return 0.0, 0.0
-    valid = (depth > 0) & (depth <= depth_trunc_mm)
-    frac = float(valid.sum()) / float(depth.size)
+    depth_eval = _crop_array(depth, bbox)
+    if depth_eval.size == 0:
+        return 0.0, 0.0
+    valid = (depth_eval > 0) & (depth_eval <= depth_trunc_mm)
+    if depth_min_mm > 0:
+        valid &= depth_eval >= depth_min_mm
+    frac = float(valid.sum()) / float(depth_eval.size)
     if valid.any():
-        med = float(np.median(depth[valid]))
+        med = float(np.median(depth_eval[valid]))
     else:
         med = 0.0
     return frac, med
+
+
+def _measured_gantry_step_m(
+    color_a: np.ndarray,
+    color_b: np.ndarray,
+    median_depth_m: float,
+    K,
+    params: QualityParams,
+) -> tuple[float, float]:
+    """Estimate per-frame translation from image shift + median depth."""
+    if median_depth_m <= 0:
+        return 0.0, 0.0
+
+    a_eval = _crop_array(color_a, params.bbox)
+    b_eval = _crop_array(color_b, params.bbox)
+    gray_a = cv2.cvtColor(a_eval, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray_b = cv2.cvtColor(b_eval, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    shift, response = cv2.phaseCorrelate(gray_a, gray_b)
+    if response <= 0:
+        return 0.0, 0.0
+
+    axis = int(params.gantry_axis)
+    shift_px = float(shift[0] if axis == 0 else shift[1])
+    focal = float(K[0, 0] if axis == 0 else K[1, 1])
+    measured = abs(shift_px * median_depth_m / focal)
+    ratio = measured / params.gantry_step_m if params.gantry_step_m > 0 else 0.0
+    return float(measured), float(ratio)
 
 
 def _evaluate_pair(
@@ -158,8 +209,10 @@ def _evaluate_pair(
     if color_a is None or depth_a_im is None or color_b is None or depth_b_im is None:
         return None
 
-    color_a = cv2.cvtColor(color_a, cv2.COLOR_BGR2RGB)
-    color_b = cv2.cvtColor(color_b, cv2.COLOR_BGR2RGB)
+    color_a_bgr = color_a
+    color_b_bgr = color_b
+    color_a = cv2.cvtColor(color_a_bgr, cv2.COLOR_BGR2RGB)
+    color_b = cv2.cvtColor(color_b_bgr, cv2.COLOR_BGR2RGB)
 
     try:
         pcd_a = rgbd2pcd(
@@ -176,12 +229,20 @@ def _evaluate_pair(
         return PairMetrics(0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, error=str(e))
 
     depth_trunc_mm = params.depth_trunc * params.depth_scale
-    valid_frac, med_mm = _depth_validity(depth_a_im, depth_trunc_mm)
+    valid_frac, med_mm = _depth_validity(
+        depth_a_im, depth_trunc_mm, params.depth_min_mm, params.bbox,
+    )
     n_pts = len(pcd_a.points) if pcd_a is not None else 0
+    median_depth_m = med_mm / params.depth_scale if params.depth_scale > 0 else 0.0
+    measured_step_m, step_ratio = _measured_gantry_step_m(
+        color_a_bgr, color_b_bgr, median_depth_m, K, params,
+    )
 
     if pcd_a is None or pcd_b is None or pcd_a.is_empty() or pcd_b.is_empty():
-        return PairMetrics(0, valid_frac, med_mm / 1000.0, n_pts, 0.0, 0.0, 0.0,
-                           error='empty cloud')
+        return PairMetrics(
+            0, valid_frac, median_depth_m, n_pts, 0.0, 0.0, 0.0,
+            measured_step_m, step_ratio, error='empty cloud',
+        )
 
     try:
         _, T, fitness, rmse = color_icp(
@@ -189,24 +250,29 @@ def _evaluate_pair(
         )
         rot_deg = _rotation_magnitude_deg(T)
     except Exception as e:
-        return PairMetrics(0, valid_frac, med_mm / 1000.0, n_pts, 0.0, 0.0, 0.0,
-                           error=f'icp: {e}')
+        return PairMetrics(
+            0, valid_frac, median_depth_m, n_pts, 0.0, 0.0, 0.0,
+            measured_step_m, step_ratio, error=f'icp: {e}',
+        )
 
     return PairMetrics(
         pair_index=0,
         depth_validity=valid_frac,
-        median_depth_m=med_mm / 1000.0,
+        median_depth_m=median_depth_m,
         n_points=n_pts,
         icp_fitness=float(fitness),
         icp_rmse=float(rmse),
         rotation_deg=float(rot_deg),
+        measured_step_m=measured_step_m,
+        gantry_step_ratio=step_ratio,
     )
 
 
 def _aggregate(metrics: list[PairMetrics]) -> dict:
     out = {}
     keys = ('depth_validity', 'median_depth_m', 'n_points',
-            'icp_fitness', 'icp_rmse', 'rotation_deg')
+            'icp_fitness', 'icp_rmse', 'rotation_deg',
+            'measured_step_m', 'gantry_step_ratio')
     if not metrics:
         return out
     for k in keys:
@@ -220,6 +286,17 @@ def _aggregate(metrics: list[PairMetrics]) -> dict:
             'p25':    float(np.percentile(vals, 25)),
             'p75':    float(np.percentile(vals, 75)),
         }
+    validity_vals = np.array(
+        [m.depth_validity for m in metrics if not m.error], dtype=float,
+    )
+    if validity_vals.size:
+        std = float(np.std(validity_vals))
+        out['depth_coverage_uniformity'] = {
+            'mean': std,
+            'median': std,
+            'p25': std,
+            'p75': std,
+        }
     return out
 
 
@@ -230,6 +307,8 @@ def _verdict(agg: dict, t: QualityThresholds) -> tuple[str, list[str]]:
     rmse_mean = agg.get('icp_rmse', {}).get('mean', 1.0)
     val_mean = agg.get('depth_validity', {}).get('mean', 0.0)
     rot_mean = agg.get('rotation_deg', {}).get('mean', 0.0)
+    step_ratio = agg.get('gantry_step_ratio', {}).get('median', 0.0)
+    validity_std = agg.get('depth_coverage_uniformity', {}).get('mean', 0.0)
 
     failing = []
     state = 'PASS'
@@ -259,6 +338,14 @@ def _verdict(agg: dict, t: QualityThresholds) -> tuple[str, list[str]]:
         downgrade('FAIL'); failing.append(f'rotation mean {rot_mean:.2f} deg')
     elif rot_mean > t.rotation_pass_deg:
         downgrade('WARN'); failing.append(f'rotation mean {rot_mean:.2f} deg')
+
+    if step_ratio > 0:
+        if (step_ratio < t.gantry_step_ratio_warn_low or
+                step_ratio > t.gantry_step_ratio_warn_high):
+            downgrade('WARN'); failing.append(f'gantry step ratio {step_ratio:.2f}')
+
+    if validity_std > t.depth_uniformity_warn:
+        downgrade('WARN'); failing.append(f'depth coverage std {validity_std:.3f}')
 
     return state, failing
 

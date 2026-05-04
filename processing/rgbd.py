@@ -3,6 +3,36 @@ import cv2
 import open3d as o3d
 
 
+def plant_mask_bgr(color_bgr: np.ndarray) -> np.ndarray:
+    """
+    HSV plant mask tuned for the gantry plant dataset.
+
+    Keeps dark/bright green leaves and brown stems while rejecting gray metal,
+    black tray/table regions, and low-saturation background.
+
+    Returns a uint8 mask (255 = plant pixel, 0 = background).
+    Can be used to zero non-plant depth before ICP (plant_icp) or TSDF (color_mask).
+    """
+    hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
+
+    leaf_mask = cv2.inRange(
+        hsv,
+        np.array([30, 35, 25], dtype=np.uint8),
+        np.array([95, 255, 255], dtype=np.uint8),
+    )
+    stem_mask = cv2.inRange(
+        hsv,
+        np.array([8, 45, 25], dtype=np.uint8),
+        np.array([32, 255, 210], dtype=np.uint8),
+    )
+    mask = cv2.bitwise_or(leaf_mask, stem_mask)
+    close_kernel = np.ones((5, 5), np.uint8)
+    open_kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+    return mask
+
+
 def rgbd2pcd(
     color_img,
     depth_img,
@@ -10,10 +40,12 @@ def rgbd2pcd(
     dist=None,
     bbox=None,
     depth_scale=1000.0,
-    depth_trunc=3.0,
+    depth_trunc=3.5,
     depth_min_mm=0,
-    erode=True,
-    inpaint=True,
+    erode=False,
+    inpaint=False,
+    mask_background=False,
+    bg_sat_thresh=40,
 ):
     """
     Convert an RGB image + depth image into an Open3D coloured PointCloud.
@@ -25,10 +57,12 @@ def rgbd2pcd(
         dist        : distortion coefficients (list of 5), or None
         bbox        : optional [x1, y1, x2, y2] crop on the colour image before projection
         depth_scale : divisor to convert raw depth to metres (1000 for RealSense mm, 1 for ICL-NUIM)
-        depth_trunc : discard depth beyond this many metres (default 3.0 m)
+        depth_trunc : discard depth beyond this many metres (default 3.5 m)
         depth_min_mm: if > 0, zero depth below this (mm). Use 0 to disable near clipping.
         erode       : if True, erode valid depth mask to reduce flying pixels at boundaries
         inpaint     : if True, fill interior holes (requires valid mask from erode or raw valid)
+        mask_background: if True, zero low-saturation white/grey background pixels
+        bg_sat_thresh: HSV saturation threshold for background masking
 
     Returns:
         o3d.geometry.PointCloud with colour
@@ -74,13 +108,25 @@ def rgbd2pcd(
     if depth_min_mm > 0:
         depth_img[(depth_img > 0) & (depth_img < depth_min_mm)] = 0
 
-    valid = (depth_img > 0).astype(np.uint8)
+    if mask_background:
+        hsv = cv2.cvtColor(color_img, cv2.COLOR_RGB2HSV)
+        bg = (hsv[:, :, 1] < bg_sat_thresh).astype(np.uint8)
+        bg = cv2.erode(bg, np.ones((3, 3), np.uint8), iterations=1)
+        depth_img[bg > 0] = 0
+
+    # Suppress flying pixels at depth discontinuities using Sobel gradient magnitude.
+    # Pixels where adjacent depth values jump by more than 200 mm are depth edges
+    # caused by the IR structured-light sensor; zero a 3×3 dilation around them.
     if erode:
-        erode_kernel = np.ones((5, 5), np.uint8)
-        valid_eroded = cv2.erode(valid, erode_kernel, iterations=1)
-        depth_img[valid_eroded == 0] = 0
-    else:
-        valid_eroded = valid
+        depth_f32 = depth_img.astype(np.float32)
+        sobel_x = cv2.Sobel(depth_f32, cv2.CV_32F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(depth_f32, cv2.CV_32F, 0, 1, ksize=3)
+        edge_mag = np.abs(sobel_x) + np.abs(sobel_y)
+        disc_mask = (edge_mag > 200).astype(np.uint8)
+        disc_dilated = cv2.dilate(disc_mask, np.ones((3, 3), np.uint8), iterations=1)
+        depth_img[disc_dilated > 0] = 0
+
+    valid_eroded = (depth_img > 0).astype(np.uint8)
 
     if inpaint:
         dilate_kernel = np.ones((11, 11), np.uint8)

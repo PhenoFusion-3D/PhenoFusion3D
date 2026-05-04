@@ -6,6 +6,10 @@ from natsort import natsorted
 import glob
 
 
+GANTRY_CONFIG_FILENAME = 'gantry_config.json'
+SESSION_FILENAME = 'session.json'
+
+
 def load_image_pairs(rgb_dir, depth_dir, step=1):
     """
     Load sorted RGB + depth image path pairs from two directories.
@@ -80,3 +84,90 @@ def get_default_intrinsics(width=640, height=480, fov_deg=60.0):
     dist = [0.0, 0.0, 0.0, 0.0, 0.0]
     print(f'[loader] Using default intrinsics: {width}x{height}, fx=fy={fx:.2f}')
     return K, dist
+
+
+def _dataset_dir_from_path(path):
+    """Return the dataset root from either a root, rgb, or depth directory."""
+    if not path:
+        return None
+    norm = os.path.abspath(path)
+    base = os.path.basename(norm).lower()
+    if base in ('rgb', 'depth'):
+        return os.path.dirname(norm)
+    return norm
+
+
+def load_session_json(dataset_dir):
+    """
+    Load capture session metadata saved next to a dataset.
+
+    Args:
+        dataset_dir: dataset root, rgb folder, or depth folder.
+
+    Returns:
+        Parsed session dictionary, or None when absent/malformed.
+    """
+    root = _dataset_dir_from_path(dataset_dir)
+    if not root:
+        return None
+    path = os.path.join(root, SESSION_FILENAME)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        print(f'[loader] Loaded session metadata: {path}')
+        return data
+    except Exception as e:
+        print(f'[loader] WARNING: Failed to parse session metadata: {e}')
+        return None
+
+
+def save_gantry_config(dataset_dir, step_m, axis):
+    """
+    Persist gantry calibration next to a dataset.
+
+    Args:
+        dataset_dir: dataset root, rgb folder, or depth folder.
+        step_m: gantry travel per original captured frame, in metres.
+        axis: camera-space gantry axis, 0=X or 1=Y.
+    """
+    root = _dataset_dir_from_path(dataset_dir)
+    if not root:
+        raise ValueError('dataset_dir is required')
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, GANTRY_CONFIG_FILENAME)
+    data = {
+        'gantry_step_m_per_frame': float(step_m),
+        'gantry_axis': int(axis),
+    }
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+    print(f'[loader] Saved gantry config: {path}')
+    return path
+
+
+def load_gantry_config(dataset_dir):
+    """
+    Load persisted gantry calibration.
+
+    Returns (step_m_per_frame, axis) or None when absent/malformed.
+    """
+    root = _dataset_dir_from_path(dataset_dir)
+    if not root:
+        return None
+    path = os.path.join(root, GANTRY_CONFIG_FILENAME)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        step_m = float(data['gantry_step_m_per_frame'])
+        axis = int(data['gantry_axis'])
+        if step_m <= 0 or axis not in (0, 1):
+            raise ValueError('gantry step must be >0 and axis must be 0 or 1')
+        print(f'[loader] Loaded gantry config: step={step_m:.6f}m, axis={axis}')
+        return step_m, axis
+    except Exception as e:
+        print(f'[loader] WARNING: Failed to parse gantry config: {e}')
+        return None
