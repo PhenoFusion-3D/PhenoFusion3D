@@ -20,6 +20,14 @@ matplotlib>=3.8.0
 # Omit this line only if you will never use in-app capture and only load
 # RGB-D folders from disk. Not available as a prebuilt wheel on all ARM
 # platforms -- use system librealsense + docs in that case.
+#
+# IMPORTANT: L515 (LiDAR Camera) owners must downgrade this pin -- Intel
+# dropped L515 enumeration in librealsense >= 2.55. Use:
+#     pyrealsense2>=2.54.0,<2.55
+# and run on Python 3.10 or 3.11 (the L515-compatible 2.54.2.5684 wheel is
+# not built for Python 3.12+). Or install with the dedicated extras group:
+#     pip install -e ".[windows,l515]"
+# D400 / D500 series users can leave the line below as-is.
 pyrealsense2>=2.54.0
 
 # --- Developer tooling (optional) ---

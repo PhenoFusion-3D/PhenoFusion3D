@@ -34,6 +34,20 @@ ros = [
 windows = [
     "pyrealsense2>=2.54.0",
 ]
+# L515 (LiDAR Camera) compatibility shim.
+#
+# Intel discontinued the L515 in August 2021 and dropped its enumeration
+# code path from librealsense in releases >= 2.55. Newer pyrealsense2
+# wheels return `count: 0` from `rs.context().query_devices()` even when
+# Windows clearly sees the camera. The last L515-compatible release is
+# 2.54.2.5684, which only has prebuilt wheels for Python <= 3.11.
+#
+# Install with:    pip install -e ".[windows,l515]"   (requires Python 3.10 or 3.11)
+# Owners of D400 / D500 series cameras do NOT need this extras group;
+# they should use the plain "windows" / "ros" extras with the latest SDK.
+l515 = [
+    "pyrealsense2>=2.54.0,<2.55",
+]
 # Developer tooling
 dev = [
     "pytest>=7.4.0",
@@ -46,3 +60,18 @@ phenofusion3d = "main:main"
 [tool.setuptools.packages.find]
 include = ["app*", "capture*", "processing*", "file_io*", "visualiser*"]
 exclude = ["data*", "stakeholder_reference*", "tests*", "venv*"]
+
+[tool.pytest.ini_options]
+# Restrict auto-discovery to tests/. The repo root contains scripts named
+# test_with_one_img.py / test_with_whole_seq.py which match pytest's default
+# pattern but are actually executable manual-test scripts (they raise
+# SystemExit at import time when their fixture dataset is missing). Without
+# this restriction, plain `pytest` from the repo root crashes at collection.
+testpaths = ["tests"]
+# Integration tests that hit real datasets (e.g. data/main/test_plant_rs13_1)
+# are tagged "slow" and skipped by default. Run them explicitly with
+#   pytest -m slow
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+addopts = "-m 'not slow'"

@@ -27,6 +27,32 @@ backend.
 - Python 3.10+ from python.org or Microsoft Store
 - [Intel RealSense SDK 2.0 runtime](https://github.com/IntelRealSense/librealsense/releases) (only required if you actually want to plug a camera in)
 
+#### L515 (LiDAR Camera) owners: extra steps
+
+Intel discontinued the L515 in August 2021 and dropped its enumeration
+from librealsense in releases >= 2.55. The default `pyrealsense2` wheel
+on PyPI is now too new to see an L515; `rs.context().query_devices()`
+returns 0 devices even when Windows clearly sees the camera.
+
+To use an L515 with PhenoFusion3D:
+
+1. **Use Python 3.10 or 3.11** (not 3.12+). The L515-compatible
+   `pyrealsense2==2.54.2.5684` wheel is only built up to Python 3.11.
+2. **Install Intel RealSense SDK 2.0 v2.54.2** for Windows from
+   [the librealsense releases page](https://github.com/IntelRealSense/librealsense/releases/tag/v2.54.2).
+   This also gives you `Intel RealSense Viewer` for sanity-testing the
+   camera independent of Python.
+3. **Install the L515 extras** instead of plain `windows`:
+
+    ```powershell
+    py -3.11 -m venv venv
+    .\venv\Scripts\Activate.ps1
+    pip install -e ".[windows,l515]"
+    ```
+
+   This pins `pyrealsense2>=2.54.0,<2.55`, which keeps L515 enumeration
+   working. D400 / D500 series users do not need this extras group.
+
 ## Install
 
 ### Linux
@@ -175,6 +201,13 @@ the above.
 - **`pyrealsense2` not found**
   - On Linux x86_64 / Windows, `pip install pyrealsense2` should just
     work. On ARM Linux you need to build librealsense from source.
+- **L515 plugged in but capture says "No Intel RealSense camera was found"**
+  - Symptom: Windows Device Manager shows the L515 healthy, but
+    `rs.context().query_devices()` returns 0. Cause: `pyrealsense2 >= 2.55`
+    dropped L515 support after Intel EOL'd the camera. Fix: use Python
+    3.10 / 3.11 and install with `pip install -e ".[windows,l515]"`
+    (see the L515 section above). On startup, `main.py` runs a self-check
+    that surfaces this diagnosis as a modal dialog before you click Capture.
 - **AppImage build fails with `python-appimage: command not found`**
   - The build script installs `python-appimage` into a private build
     venv at `build/appimage/venv/`. Delete that directory and rerun
