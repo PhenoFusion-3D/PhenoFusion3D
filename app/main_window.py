@@ -75,7 +75,9 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         scroll.setFrameShape(QScrollArea.NoFrame)
         left_layout.addWidget(scroll)
-        left_widget.setFixedWidth(360)
+        # Wide enough for long dataset paths, BBox row, and gantry controls
+        # without constant horizontal scrolling (was fixed at 360px).
+        left_widget.setMinimumWidth(520)
 
         # --- Right pane: placeholder + metrics + log ---
         right_widget = QWidget()
@@ -105,6 +107,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        # Favour a wider control column at startup; user can still drag the handle.
+        splitter.setSizes([560, 840])
 
         root_layout.addWidget(splitter)
 
@@ -139,8 +143,10 @@ class MainWindow(QMainWindow):
         # Data panel -> controller
         self.data_panel.run_requested.connect(self.controller.on_run_clicked)
         self.data_panel.run_requested.connect(
-            lambda rgb, depth, intr, step, *_: self.controller.on_quality_paths(
-                rgb, depth, intr, step
+            lambda rgb, depth, intr, step, gantry_step, axis, depth_min,
+                   depth_trunc, bbox, feature_init, use_tsdf: self.controller.on_quality_paths(
+                rgb, depth, intr, step, gantry_step, axis, depth_min,
+                depth_trunc, bbox, feature_init
             )
         )
         self.data_panel.calibrate_requested.connect(self.controller.on_calibrate_requested)
@@ -211,6 +217,12 @@ class MainWindow(QMainWindow):
             self.data_panel.depth_edit.text(),
             self.data_panel.intr_edit.text(),
             self.data_panel.step_spin.value(),
+            self.data_panel.gantry_step_spin.value() / 1000.0,
+            self.data_panel.gantry_axis_combo.currentIndex(),
+            self.data_panel.depth_min_spin.value(),
+            self.data_panel.depth_trunc_spin.value(),
+            self.data_panel._bbox_from_controls(),
+            self.data_panel.feature_init_check.isChecked(),
         )
         self.quality_panel.set_running(True)
         self.controller.on_quick_check_clicked()
@@ -221,6 +233,12 @@ class MainWindow(QMainWindow):
             self.data_panel.depth_edit.text(),
             self.data_panel.intr_edit.text(),
             self.data_panel.step_spin.value(),
+            self.data_panel.gantry_step_spin.value() / 1000.0,
+            self.data_panel.gantry_axis_combo.currentIndex(),
+            self.data_panel.depth_min_spin.value(),
+            self.data_panel.depth_trunc_spin.value(),
+            self.data_panel._bbox_from_controls(),
+            self.data_panel.feature_init_check.isChecked(),
         )
         self.quality_panel.set_running(True)
         self.controller.on_full_report_clicked()

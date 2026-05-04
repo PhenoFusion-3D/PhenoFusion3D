@@ -66,6 +66,12 @@ class QualityPanel(QWidget):
         )
         layout.addWidget(self.verdict_lbl)
 
+        self.gantry_lbl = QLabel('Gantry step: not evaluated')
+        self.gantry_lbl.setStyleSheet(
+            'background:#e2e8f0; color:#334155; padding:6px; border-radius:4px;'
+        )
+        layout.addWidget(self.gantry_lbl)
+
         # Progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -121,6 +127,20 @@ class QualityPanel(QWidget):
             f'background:{colour}; color:white; padding:8px; '
             f'border-radius:6px; font-weight:bold;'
         )
+
+        step_stats = report.aggregate.get('measured_step_m', {})
+        ratio_stats = report.aggregate.get('gantry_step_ratio', {})
+        measured = step_stats.get('median', 0.0)
+        ratio = ratio_stats.get('median', 0.0)
+        if measured > 0 and ratio > 0:
+            configured = measured / ratio
+            self.gantry_lbl.setText(
+                f'Gantry step: measured {measured * 1000:.3f} mm/frame '
+                f'vs configured {configured * 1000:.3f} mm/frame '
+                f'(ratio {ratio:.2f})'
+            )
+        else:
+            self.gantry_lbl.setText('Gantry step: not enough signal to evaluate')
 
         # Table
         rows = list(report.aggregate.items())

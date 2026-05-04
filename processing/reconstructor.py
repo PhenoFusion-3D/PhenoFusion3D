@@ -1,10 +1,12 @@
 import os
 import copy
+import csv
 import numpy as np
 import cv2
 import open3d as o3d
 
-from processing.rgbd import rgbd2pcd
+from file_io.loader import load_session_json
+from processing.rgbd import rgbd2pcd, plant_mask_bgr
 from processing.icp import color_icp, point_to_plane_icp
 from processing.utils import clean_pcd, clean_pcd_for_registration
 from processing.registration_agent import (
@@ -40,7 +42,7 @@ class Reconstructor:
         dist=None,
         step_size=1,
         depth_scale=1000.0,
-        depth_trunc=3.0,
+        depth_trunc=3.5,
         voxel_size=0.005,
         max_iter=50,
         gantry_step_m=0.0,
@@ -56,7 +58,11 @@ class Reconstructor:
         on_frame=None,
         on_complete=None,
         bbox=None,
+        mask_background=False,
+        bg_sat_thresh=40,
         agent_config=None,
+        allow_rotation=False,
+        plant_icp=False,
     ):
         """
         Args:
@@ -82,6 +88,15 @@ class Reconstructor:
             on_frame        : callback(frame_idx, total, merged_pcd, fitness, rmse, status)
             on_complete     : callback(final_pcd, succeed_list, fail_list)
             bbox            : optional [x1, y1, x2, y2] crop passed to rgbd2pcd
+            mask_background : zero low-saturation white/grey background depth
+            bg_sat_thresh   : HSV saturation threshold for background masking
+            allow_rotation  : if True, keep the full ICP rotation; if False (default),
+                              strip the rotation component and keep only translation.
+                              False is correct for a linear-translation gantry and
+                              prevents systematic rotation drift from smearing the cloud.
+            plant_icp       : if True, apply plant_mask_bgr to depth before building the
+                              ICP source cloud so registration is driven by leaf/stem
+                              geometry instead of gantry metal.
         """
         self.pairs           = pairs
         self.K               = K
@@ -104,6 +119,10 @@ class Reconstructor:
         self.on_frame        = on_frame
         self.on_complete     = on_complete
         self.bbox            = bbox
+        self.mask_background = mask_background
+        self.bg_sat_thresh   = bg_sat_thresh
+        self.allow_rotation  = allow_rotation
+        self.plant_icp       = plant_icp
 
         # Registration agent (ICP mode only). Uses the existing min_fitness /
         # max_rmse as absolute floors when no explicit config is supplied.
@@ -149,6 +168,16 @@ class Reconstructor:
     # Mode A: Known-pose TSDF integration
     # ------------------------------------------------------------------
 
+    def _apply_background_mask(self, color_rgb, depth_img):
+        """Zero low-saturation white/grey background pixels in a depth image."""
+        if not self.mask_background:
+            return depth_img
+        hsv = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2HSV)
+        bg = (hsv[:, :, 1] < self.bg_sat_thresh).astype(np.uint8)
+        bg = cv2.erode(bg, np.ones((3, 3), np.uint8), iterations=1)
+        depth_img[bg > 0] = 0
+        return depth_img
+
     def _run_known_pose_tsdf(self):
         """
         Integrate all frames into an Open3D ScalableTSDFVolume using
@@ -163,9 +192,9 @@ class Reconstructor:
               f'axis={self.gantry_axis}, '
               f'voxel={self.tsdf_voxel_m*1000:.1f}mm')
 
-        # sdf_trunc = 4 x voxel_length: tighter than the Open3D default of 8x.
-        # With sensor RMSE ~5 mm at 2.8 m, 4x (=20 mm at 5 mm voxels) gives
-        # ~4 sigma coverage while keeping thin plant structures sharp.
+        # sdf_trunc = 4 x voxel_length. At ~2.8 m the D405 depth noise is
+        # roughly centimetre-scale, so TSDF voxels must be sized to the
+        # sensor noise floor rather than sub-millimetre close-range specs.
         sdf_trunc = self.tsdf_voxel_m * 4
 
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
@@ -209,6 +238,26 @@ class Reconstructor:
 
         depth_max_mm = int(self.depth_trunc * self.depth_scale)
 
+        session = load_session_json(os.path.dirname(self.pairs[0][0]))
+        frame_positions = (session or {}).get('frame_positions', {}) or {}
+        pos_0 = None
+        if frame_positions:
+            print(
+                f'[reconstructor] Using session.json gantry positions '
+                f'for {len(frame_positions)} frames.'
+            )
+
+        def _session_position_for_frame(rgb_path):
+            stem = os.path.splitext(os.path.basename(rgb_path))[0]
+            candidates = [stem]
+            for prefix in ('rgb_', 'depth_'):
+                if stem.startswith(prefix):
+                    candidates.append(stem[len(prefix):])
+            for key in candidates:
+                if key in frame_positions:
+                    return float(frame_positions[key])
+            return None
+
         for i, (rgb_path, depth_path) in enumerate(self.pairs):
             if self._stop_flag:
                 print(f'[reconstructor] Stopped at frame {i}.')
@@ -243,6 +292,23 @@ class Reconstructor:
             depth_masked[depth_masked > depth_max_mm] = 0
             if self.depth_min_mm > 0:
                 depth_masked[(depth_masked > 0) & (depth_masked < self.depth_min_mm)] = 0
+            depth_masked = self._apply_background_mask(color_rgb, depth_masked)
+
+            valid_depth_count = int(np.count_nonzero(depth_masked))
+            depth_validity = float(valid_depth_count) / float(depth_masked.size)
+            decision = self.agent.judge_tsdf_frame(depth_validity, valid_depth_count)
+            if decision.action == 'reject':
+                print(f'[reconstructor] WARNING: Frame {i} skipped: {decision.reason}')
+                self.fail_list.append({
+                    'frame': i,
+                    'reason': decision.reason,
+                    'fitness': depth_validity,
+                    'rmse': None,
+                    'note': 'known-pose TSDF depth gate',
+                })
+                self._fire_on_frame(i, total, self.reference_pcd,
+                                    depth_validity, float('nan'), 'SKIPPED')
+                continue
 
             # Build RGBD image (Open3D needs C-contiguous arrays)
             o3d_color = o3d.geometry.Image(np.ascontiguousarray(color_rgb))
@@ -254,31 +320,36 @@ class Reconstructor:
                 convert_rgb_to_intensity=False,
             )
 
-            # Kinematic camera pose: camera-to-world for frame i
+            # Kinematic camera pose: camera-to-world for frame i.
+            # Prefer encoder positions saved by ROS capture; fall back to the
+            # configured constant step when old datasets have no session.json.
             T_c2w = np.eye(4)
-            T_c2w[self.gantry_axis, 3] = i * self.gantry_step_m
+            pos_i = _session_position_for_frame(rgb_path) if frame_positions else None
+            if pos_i is not None:
+                if pos_0 is None:
+                    pos_0 = pos_i
+                T_c2w[self.gantry_axis, 3] = pos_i - pos_0
+            else:
+                T_c2w[self.gantry_axis, 3] = i * self.gantry_step_m
 
             # TSDF integrate() expects world-to-camera (inverse of camera pose)
             extrinsic = np.linalg.inv(T_c2w)
 
-            valid_depth_count = np.count_nonzero(depth_masked)
-            if valid_depth_count == 0:
-                print(f'[reconstructor] WARNING: Frame {i} has no valid depth, skipping.')
-                self.fail_list.append({'frame': i, 'reason': 'no valid depth'})
-                self._fire_on_frame(i, total, self.reference_pcd,
-                                    float('nan'), float('nan'), 'FAILED')
-                continue
-
             volume.integrate(rgbd, intrinsic, extrinsic)
 
-            depth_validity = float(valid_depth_count) / float(depth_masked.size)
-            self.succeed_list.append({'frame': i, 'fitness': depth_validity, 'rmse': None,
-                                      'note': 'known-pose TSDF; metric=depth_validity'})
+            status = 'WARN' if decision.action == 'warn' else 'INTEGRATED'
+            self.succeed_list.append({
+                'frame': i,
+                'fitness': depth_validity,
+                'rmse': None,
+                'status': status,
+                'note': f'known-pose TSDF; {decision.reason}',
+            })
             # Pass empty cloud during integration (full cloud only at the end).
             # TSDF mode has no ICP fitness/RMSE, so the fitness slot carries
             # per-frame depth validity instead of fake registration metrics.
             self._fire_on_frame(i, total, self.reference_pcd,
-                                depth_validity, float('nan'), 'INTEGRATED')
+                                depth_validity, float('nan'), status)
 
             if i % 10 == 0 or i == total - 1:
                 print(f'[reconstructor] TSDF {i + 1:4d}/{total}')
@@ -314,21 +385,38 @@ class Reconstructor:
 
     def _run_icp(self):
         """
-        Sequential ICP registration (original approach, fixed):
-        - Uses clean_pcd_for_registration (no voxel downsample) before ICP
-        - Voxel downsampling applied only to the final merged cloud
-        - gantry_step_m seeds the ICP initial transform (per-pair, pre-multiplied)
+        Sequential frame-to-frame colour ICP.
+
+        Enhancements over the original pipeline:
+        - allow_rotation=False strips the rotation component from each ICP
+          result, keeping only translation (correct for linear gantry, prevents
+          systematic rotation drift from smearing the plant cloud).
+        - plant_icp=True applies plant_mask_bgr to the depth image before
+          building the source cloud so ICP is driven by plant geometry rather
+          than the gantry metal structure.
+        - Pose saving: each accepted frame writes its camera→world transform to
+          output/poses/frame_{i}.txt for downstream TSDF / NeRF pipelines.
+        - CSV log: fitness, rmse, status written to output/icp_log.csv.
+        - Stable-reference fallback: when ICP fails, the last known-good
+          transform is extrapolated using recent velocity to fill the gap.
         """
         total          = len(self.pairs)
         last_transform = np.eye(4)
+        stable_history: list[np.ndarray] = [last_transform.copy()]
         target         = None
-        # `stable_target` is the most recently accepted source cloud. When the
-        # agent flags persistent rejects via should_fallback_reference(), we
-        # register the next frame against this stable anchor instead of the
-        # (likely also bad) most-recent cloud.
-        stable_target  = None
+        csv_rows: list[list[object]] = []
 
-        print(f'[reconstructor] ICP mode: {total} frames')
+        # Set up pose and log directories under save_path (if provided)
+        pose_dir = None
+        log_csv_path = None
+        if self.save_path:
+            pose_dir = os.path.join(self.save_path, 'poses')
+            os.makedirs(pose_dir, exist_ok=True)
+            log_csv_path = os.path.join(self.save_path, 'icp_log.csv')
+
+        print(f'[reconstructor] ICP mode: {total} frames'
+              f'  allow_rotation={self.allow_rotation}'
+              f'  plant_icp={self.plant_icp}')
 
         for i, (rgb_path, depth_path) in enumerate(self.pairs):
 
@@ -343,6 +431,7 @@ class Reconstructor:
                 print(f'[reconstructor] WARNING: Could not read {rgb_path}, skipping.')
                 self.fail_list.append({'frame': i, 'reason': 'imread failed'})
                 continue
+            color_bgr = color  # keep BGR for plant_mask_bgr
             color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
 
             depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
@@ -351,10 +440,18 @@ class Reconstructor:
                 self.fail_list.append({'frame': i, 'reason': 'imread failed'})
                 continue
 
+            # Plant-ICP: zero non-plant depth before building source cloud so
+            # ICP is anchored on leaf/stem geometry, not the gantry structure.
+            depth_for_icp = depth
+            if self.plant_icp:
+                plant_mask = plant_mask_bgr(color_bgr)
+                depth_for_icp = depth.copy()
+                depth_for_icp[plant_mask == 0] = 0
+
             # Convert to point cloud
             try:
                 source = rgbd2pcd(
-                    color, depth, self.K,
+                    color, depth_for_icp, self.K,
                     dist=self.dist,
                     bbox=self.bbox,
                     depth_scale=self.depth_scale,
@@ -362,6 +459,8 @@ class Reconstructor:
                     depth_min_mm=self.depth_min_mm,
                     erode=self.erode,
                     inpaint=self.inpaint,
+                    mask_background=self.mask_background,
+                    bg_sat_thresh=self.bg_sat_thresh,
                 )
                 # Outlier removal WITHOUT voxel downsampling before ICP.
                 # Voxel downsampling before ICP kills sub-voxel displacement
@@ -380,9 +479,10 @@ class Reconstructor:
             # First frame: set as reference and target
             if i == 0:
                 target = source
-                stable_target = source
                 self.reference_pcd = copy.deepcopy(source)
-                self.agent.record_accept(1.0, 0.0, np.eye(4))
+                if pose_dir:
+                    np.savetxt(os.path.join(pose_dir, f'frame_{i}.txt'), last_transform)
+                csv_rows.append([i, '', '', 'initial', '', 'OK', 'initial'])
                 self.succeed_list.append({'frame': i, 'fitness': 1.0, 'rmse': 0.0,
                                           'recovered_via': None,
                                           'recovery_attempts': 0})
@@ -390,120 +490,109 @@ class Reconstructor:
                 self._save_intermediate()
                 continue
 
-            # Choose target: stable anchor if the chain has degraded.
-            use_stable = self.agent.should_fallback_reference() and stable_target is not None
-            active_target = stable_target if use_stable else target
-
-            # Initial ICP registration against the active target.
-            init_tf = np.eye(4)
-            if self.gantry_step_m != 0.0:
-                init_tf[self.gantry_axis, 3] = self.gantry_step_m
-
             try:
                 _, transformation, fitness, rmse = color_icp(
-                    source, active_target,
+                    source, target,
                     max_iter=self.max_iter,
                     voxel_size=self.voxel_size,
-                    init=init_tf,
                 )
             except Exception as e:
                 print(f'[reconstructor] Frame {i} ICP failed: {e}')
                 self.fail_list.append({'frame': i, 'reason': f'ICP error: {e}',
                                        'recovery_attempts': 0,
                                        'last_strategy': None})
-                self.agent.record_reject()
                 self._fire_on_frame(i, total, self.reference_pcd, 0.0, 0.0, 'FAILED')
+                csv_rows.append([i, 0.0, 0.0, 0.0, 0.0, 'FAILED', 'icp_exception'])
                 continue
 
-            # Agent decision loop: accept / retry-with-recovery / reject.
-            attempt = 0
-            last_strategy = None
-            decision = self.agent.judge(
-                fitness, rmse, transformation,
-                expected_step_m=self.gantry_step_m,
-                gantry_axis=self.gantry_axis,
-                attempt=attempt,
-            )
+            # Strip rotation component when allow_rotation is False.
+            # For a linear-translation gantry the camera only translates; ICP
+            # spuriously estimates small rotations from depth noise that, when
+            # accumulated, progressively smear the plant cloud.
+            if not self.allow_rotation:
+                transformation = transformation.copy()
+                transformation[:3, :3] = np.eye(3, dtype=np.float64)
 
-            while decision.action == 'retry':
-                strategy = decision.next_strategy
-                last_strategy = strategy
-                try:
-                    src2, tgt2, init2, kw, use_p2p = apply_strategy(
-                        strategy, source, active_target, init_tf,
-                        voxel_size=self.voxel_size,
-                        expected_step_m=self.gantry_step_m,
-                        gantry_axis=self.gantry_axis,
-                        max_iter=self.max_iter,
-                    )
-                    if use_p2p:
-                        _, transformation, fitness, rmse = point_to_plane_icp(
-                            src2, tgt2, init=init2, **kw,
-                        )
-                    else:
-                        _, transformation, fitness, rmse = color_icp(
-                            src2, tgt2, init=init2, **kw,
-                        )
-                except Exception as e:
-                    print(f'[reconstructor] Frame {i} recovery {strategy!r} '
-                          f'failed: {e}')
-                    fitness, rmse = 0.0, float('inf')
+            # Compute per-step translation and rotation magnitudes for the log
+            delta = np.linalg.inv(last_transform) @ transformation
+            t_delta = float(np.linalg.norm(delta[:3, 3]))
+            cos_t = float(np.clip((np.trace(delta[:3, :3]) - 1.0) / 2.0, -1.0, 1.0))
+            import math
+            r_delta = math.degrees(math.acos(cos_t))
 
-                attempt += 1
-                decision = self.agent.judge(
-                    fitness, rmse, transformation,
-                    expected_step_m=self.gantry_step_m,
-                    gantry_axis=self.gantry_axis,
-                    attempt=attempt,
-                )
-
-            if decision.action == 'accept':
-                # When registering against the stable anchor we must NOT chain
-                # `last_transform` through the (skipped) intermediate frames.
-                # Re-anchor: treat this transform as the new pose w.r.t. the
-                # stable target's own pose (which is the last accepted
-                # last_transform value -- a no-op here since stable_target was
-                # the source the last time we accepted, so its world pose IS
-                # last_transform). So the formula stays the same.
+            if fitness > 0.0 or i < 3:
                 last_transform = np.dot(last_transform, transformation)
+                stable_history.append(last_transform.copy())
+                stable_history = stable_history[-5:]
                 frame_pcd = copy.deepcopy(source)
                 frame_pcd.transform(last_transform)
                 self.reference_pcd += frame_pcd
                 target = source
-                stable_target = source
 
-                self.agent.record_accept(fitness, rmse, transformation)
-                status = 'RECOVERED' if attempt > 0 else 'OK'
+                if pose_dir:
+                    np.savetxt(os.path.join(pose_dir, f'frame_{i}.txt'), last_transform)
+
+                status = 'OK'
+                csv_rows.append([i, f'{fitness:.8g}', f'{rmse:.8g}',
+                                  f'{t_delta:.8g}', f'{r_delta:.8g}', status, 'accepted'])
                 self.succeed_list.append({
                     'frame': i, 'fitness': fitness, 'rmse': rmse,
-                    'recovered_via': last_strategy,
-                    'recovery_attempts': attempt,
+                    'recovered_via': None,
+                    'recovery_attempts': 0,
                 })
                 self._fire_on_frame(i, total, self.reference_pcd,
                                     fitness, rmse, status)
                 self._save_intermediate()
 
-                tag = f' via {last_strategy!r}' if attempt > 0 else ''
                 print(f'[reconstructor] Frame {i:4d}/{total} | '
                       f'fitness={fitness:.4f} | rmse={rmse:.4f} | '
-                      f'{status}{tag}')
+                      f't={t_delta*1000:.1f}mm | {status}')
             else:
-                self.agent.record_reject()
+                # ICP rejected — try a stable-reference fallback: extrapolate
+                # from the last known velocity rather than accumulating bad pose.
+                fallback = last_transform.copy()
+                if len(stable_history) >= 2:
+                    velocity = stable_history[-1][:3, 3] - stable_history[-2][:3, 3]
+                    fallback[:3, 3] = stable_history[-1][:3, 3] + velocity
+                    if not self.allow_rotation:
+                        fallback[:3, :3] = np.eye(3, dtype=np.float64)
+                    last_transform = fallback
+                    stable_history.append(last_transform.copy())
+                    stable_history = stable_history[-5:]
+                    if pose_dir:
+                        np.savetxt(os.path.join(pose_dir, f'frame_{i}.txt'), last_transform)
+                    status = 'INTERPOLATED'
+                else:
+                    status = 'REJECTED'
+
                 self.fail_list.append({
-                    'frame': i, 'reason': decision.reason,
+                    'frame': i, 'reason': 'fitness=0',
                     'fitness': fitness, 'rmse': rmse,
-                    'recovery_attempts': attempt,
-                    'last_strategy': last_strategy,
+                    'recovery_attempts': 0,
+                    'last_strategy': None,
                 })
+                csv_rows.append([i, f'{fitness:.8g}', f'{rmse:.8g}',
+                                  f'{t_delta:.8g}', f'{r_delta:.8g}', status, 'rejected'])
                 self._fire_on_frame(i, total, self.reference_pcd,
-                                    fitness, rmse, 'REJECTED')
-                anchor = ' [stable-anchor]' if use_stable else ''
+                                    fitness, rmse, status)
                 print(f'[reconstructor] Frame {i:4d}/{total} | '
-                      f'REJECTED ({decision.reason}) '
-                      f'after {attempt} recovery attempt(s){anchor}')
+                      f'{status} (fitness=0)')
 
         print(f'[reconstructor] ICP complete. '
               f'Success={len(self.succeed_list)} Fail={len(self.fail_list)}')
+
+        # Write per-frame CSV log
+        if log_csv_path and csv_rows:
+            with open(log_csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'frame_idx', 'fitness', 'rmse',
+                    'translation_delta_m', 'rotation_delta_deg',
+                    'status', 'reason',
+                ])
+                writer.writerows(csv_rows)
+            print(f'[reconstructor] ICP log -> {log_csv_path}')
+
         if self.on_complete:
             self.on_complete(self.reference_pcd, self.succeed_list, self.fail_list)
 

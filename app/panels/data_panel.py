@@ -1,18 +1,20 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QSpinBox, QFileDialog, QMessageBox,
-    QDoubleSpinBox, QComboBox, QGroupBox, QFormLayout
+    QDoubleSpinBox, QComboBox, QGroupBox, QFormLayout, QCheckBox
 )
 from PyQt5.QtCore import pyqtSignal
 import os
+
+from file_io.loader import load_gantry_config, load_session_json
 
 
 class DataPanel(QWidget):
 
     # rgb_dir, depth_dir, intrinsics, step, gantry_step_m, gantry_axis,
-    # depth_min_mm, depth_trunc_m
-    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float)
-    calibrate_requested = pyqtSignal(str, str, str)
+    # depth_min_mm, depth_trunc_m, bbox, enable_feature_init, use_tsdf
+    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool)
+    calibrate_requested = pyqtSignal(str, str, str, float, int)
     stop_requested      = pyqtSignal()
 
     def __init__(self):
@@ -51,6 +53,18 @@ class DataPanel(QWidget):
         advanced_layout.setContentsMargins(8, 8, 8, 8)
         advanced_layout.setSpacing(6)
 
+        self.recon_mode_combo = QComboBox()
+        self.recon_mode_combo.addItem('ICP  (frame-to-frame, recommended)', userData=False)
+        self.recon_mode_combo.addItem('TSDF (known poses, requires calibration)', userData=True)
+        self.recon_mode_combo.setCurrentIndex(0)
+        self.recon_mode_combo.setToolTip(
+            'ICP: registers each frame against the previous using colour ICP — '
+            'no gantry step or axis knowledge needed.\n'
+            'TSDF: integrates frames using exact kinematic camera poses — '
+            'requires accurate Gantry Step and Axis calibration.'
+        )
+        advanced_layout.addRow('Recon Mode:', self.recon_mode_combo)
+
         self.gantry_step_spin = QDoubleSpinBox()
         self.gantry_step_spin.setRange(0.01, 50.0)
         self.gantry_step_spin.setDecimals(3)
@@ -68,6 +82,26 @@ class DataPanel(QWidget):
         self.gantry_axis_combo.setCurrentIndex(0)
         advanced_layout.addRow('Gantry Axis:', self.gantry_axis_combo)
 
+        self.gantry_velocity_spin = QDoubleSpinBox()
+        self.gantry_velocity_spin.setRange(0.001, 2.0)
+        self.gantry_velocity_spin.setDecimals(3)
+        self.gantry_velocity_spin.setSingleStep(0.005)
+        self.gantry_velocity_spin.setValue(0.038)
+        self.gantry_velocity_spin.setSuffix(' m/s')
+        self.gantry_velocity_spin.setToolTip(
+            'Capture gantry velocity. Used to compute step = velocity / fps.'
+        )
+        advanced_layout.addRow('Velocity:', self.gantry_velocity_spin)
+
+        self.gantry_fps_spin = QSpinBox()
+        self.gantry_fps_spin.setRange(1, 120)
+        self.gantry_fps_spin.setValue(30)
+        self.gantry_fps_spin.setSuffix(' fps')
+        self.gantry_fps_spin.setToolTip(
+            'Capture frame rate. Used to compute step = velocity / fps.'
+        )
+        advanced_layout.addRow('FPS:', self.gantry_fps_spin)
+
         self.depth_min_spin = QSpinBox()
         self.depth_min_spin.setRange(0, 5000)
         self.depth_min_spin.setValue(0)
@@ -79,10 +113,35 @@ class DataPanel(QWidget):
         self.depth_trunc_spin.setRange(0.5, 10.0)
         self.depth_trunc_spin.setDecimals(2)
         self.depth_trunc_spin.setSingleStep(0.1)
-        self.depth_trunc_spin.setValue(3.1)
+        self.depth_trunc_spin.setValue(3.5)
         self.depth_trunc_spin.setSuffix(' m')
         self.depth_trunc_spin.setToolTip('Discard depth farther than this value.')
         advanced_layout.addRow('Depth Trunc:', self.depth_trunc_spin)
+
+        bbox_row = QHBoxLayout()
+        self.bbox_x1_spin = self._bbox_spin()
+        self.bbox_y1_spin = self._bbox_spin()
+        self.bbox_x2_spin = self._bbox_spin()
+        self.bbox_y2_spin = self._bbox_spin()
+        for label, spin in (
+            ('x1', self.bbox_x1_spin),
+            ('y1', self.bbox_y1_spin),
+            ('x2', self.bbox_x2_spin),
+            ('y2', self.bbox_y2_spin),
+        ):
+            bbox_row.addWidget(QLabel(label))
+            bbox_row.addWidget(spin)
+        self.detect_roi_btn = QPushButton('Detect ROI')
+        self.detect_roi_btn.setEnabled(False)
+        self.detect_roi_btn.setToolTip('Automatic plant ROI detection is planned; enter bbox manually for now.')
+        bbox_row.addWidget(self.detect_roi_btn)
+        advanced_layout.addRow('BBox:', bbox_row)
+
+        self.feature_init_check = QCheckBox('Enable FPFH init (slow)')
+        self.feature_init_check.setToolTip(
+            'Use feature-based global initialization as a final ICP recovery strategy.'
+        )
+        advanced_layout.addRow('ICP Recovery:', self.feature_init_check)
 
         self.calibrate_btn = QPushButton('Calibrate Gantry')
         self.calibrate_btn.setEnabled(False)
@@ -129,6 +188,13 @@ class DataPanel(QWidget):
         parent_layout.addLayout(row)
         return edit
 
+    def _bbox_spin(self):
+        spin = QSpinBox()
+        spin.setRange(0, 10000)
+        spin.setValue(0)
+        spin.setFixedWidth(70)
+        return spin
+
     def _add_file_row(self, parent_layout, label, optional=False):
         lbl_row = QHBoxLayout()
         lbl_row.addWidget(QLabel(label))
@@ -155,6 +221,8 @@ class DataPanel(QWidget):
         path = QFileDialog.getExistingDirectory(self, 'Select Folder')
         if path:
             edit.setText(path)
+            self._load_saved_gantry_config()
+            self._load_session_json_into_ui()
             self._validate()
 
     def _browse_file(self, edit):
@@ -177,6 +245,9 @@ class DataPanel(QWidget):
         gantry_axis   = self.gantry_axis_combo.currentIndex()
         depth_min_mm  = self.depth_min_spin.value()
         depth_trunc   = self.depth_trunc_spin.value()
+        bbox          = self._bbox_from_controls()
+        enable_feature_init = self.feature_init_check.isChecked()
+        use_tsdf = bool(self.recon_mode_combo.currentData())
 
         # Quick count check
         import glob
@@ -188,7 +259,8 @@ class DataPanel(QWidget):
         self.set_running(True)
         self.run_requested.emit(
             rgb_dir, depth_dir, intr_path, step,
-            gantry_step_m, gantry_axis, depth_min_mm, depth_trunc
+            gantry_step_m, gantry_axis, depth_min_mm, depth_trunc,
+            bbox, enable_feature_init, use_tsdf
         )
 
     def _on_calibrate(self):
@@ -198,7 +270,13 @@ class DataPanel(QWidget):
         if not rgb_dir or not depth_dir:
             QMessageBox.warning(self, 'Missing Data', 'Select RGB and depth folders first.')
             return
-        self.calibrate_requested.emit(rgb_dir, depth_dir, intr_path)
+        self.calibrate_requested.emit(
+            rgb_dir,
+            depth_dir,
+            intr_path,
+            self.gantry_velocity_spin.value(),
+            self.gantry_fps_spin.value(),
+        )
 
     def set_running(self, running: bool):
         self.run_btn.setEnabled(not running)
@@ -210,9 +288,41 @@ class DataPanel(QWidget):
         self.rgb_edit.setText(rgb_dir or '')
         self.depth_edit.setText(depth_dir or '')
         self.intr_edit.setText(intrinsics or '')
+        self._load_saved_gantry_config()
+        self._load_session_json_into_ui()
         self._validate()
 
     def set_gantry_params(self, step_m: float, axis: int):
         """Populate gantry controls from calibration results."""
         self.gantry_step_spin.setValue(step_m * 1000.0)
         self.gantry_axis_combo.setCurrentIndex(max(0, min(1, int(axis))))
+
+    def _bbox_from_controls(self):
+        x1 = self.bbox_x1_spin.value()
+        y1 = self.bbox_y1_spin.value()
+        x2 = self.bbox_x2_spin.value()
+        y2 = self.bbox_y2_spin.value()
+        if x2 > x1 and y2 > y1:
+            return [x1, y1, x2, y2]
+        return None
+
+    def _load_saved_gantry_config(self):
+        for path in (self.rgb_edit.text(), self.depth_edit.text()):
+            cfg = load_gantry_config(path)
+            if cfg:
+                step_m, axis = cfg
+                self.set_gantry_params(step_m, axis)
+                return
+
+    def _load_session_json_into_ui(self):
+        for path in (self.rgb_edit.text(), self.depth_edit.text()):
+            session = load_session_json(path)
+            if not session:
+                continue
+            velocity_mps = session.get('velocity_mps')
+            fps = session.get('fps')
+            if velocity_mps:
+                self.gantry_velocity_spin.setValue(float(velocity_mps))
+            if fps:
+                self.gantry_fps_spin.setValue(int(fps))
+            return

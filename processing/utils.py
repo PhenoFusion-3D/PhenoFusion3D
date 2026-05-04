@@ -23,28 +23,22 @@ def clean_pcd(pcd, nb_neighbors=30, std_ratio=1.5, voxel_size=0.005):
     return pcd
 
 
-def clean_pcd_for_registration(pcd, nb_neighbors=10, std_ratio=0.4):
+def clean_pcd_for_registration(pcd):
     """
     Outlier removal WITHOUT voxel downsampling -- for use before ICP.
 
-    Voxel downsampling before ICP kills sub-voxel displacement signal.
-    The stakeholder's clean_pcd only does outlier removal (no downsample),
-    which is why their pipeline worked on this data.
-
-    nb_neighbors / std_ratio are intentionally more permissive than the
-    output clean_pcd so we keep as many points as possible for ICP.
+    Matches the stakeholder pipeline order at metre scale: remove radius
+    outliers first to strip flying pixels, then apply statistical cleanup.
     """
     if pcd is None or pcd.is_empty():
         return pcd
 
-    # Statistical outlier removal (matches stakeholder notebook params)
+    # Stakeholder radius=3 is in millimetres; our point clouds are metres.
+    pcd, _ = pcd.remove_radius_outlier(nb_points=5, radius=0.003)
     pcd, _ = pcd.remove_statistical_outlier(
-        nb_neighbors=nb_neighbors,
-        std_ratio=std_ratio,
+        nb_neighbors=20,
+        std_ratio=2.0,
     )
-    # Keep this loose: this helper runs before ICP, so over-filtering removes
-    # thin leaves and makes the remaining cloud look artificially flat.
-    pcd, _ = pcd.remove_radius_outlier(nb_points=5, radius=0.5)
     return pcd
 
 
