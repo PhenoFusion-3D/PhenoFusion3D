@@ -13,8 +13,8 @@ class DataPanel(QWidget):
 
     # rgb_dir, depth_dir, intrinsics, step, gantry_step_m, gantry_axis,
     # depth_min_mm, depth_trunc_m, bbox, enable_feature_init, use_tsdf,
-    # mask_background, tsdf_voxel_m
-    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool, bool, float)
+    # mask_background, tsdf_voxel_m, use_canopy, canopy_stride
+    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int)
     calibrate_requested = pyqtSignal(str, str, str, float, int)
     stop_requested      = pyqtSignal()
 
@@ -55,15 +55,17 @@ class DataPanel(QWidget):
         advanced_layout.setSpacing(6)
 
         self.recon_mode_combo = QComboBox()
-        self.recon_mode_combo.addItem('ICP  (frame-to-frame, recommended)', userData=False)
-        self.recon_mode_combo.addItem('TSDF (known poses, requires calibration)', userData=True)
+        self.recon_mode_combo.addItem('ICP  (frame-to-frame, recommended)', userData='icp')
+        self.recon_mode_combo.addItem('TSDF (known poses, requires calibration)', userData='tsdf')
+        self.recon_mode_combo.addItem('Canopy (top-down plant fusion — best quality)', userData='canopy')
         self.recon_mode_combo.setCurrentIndex(0)
         self.recon_mode_combo.setToolTip(
-            'ICP: registers each frame against the previous using colour ICP — '
-            'no gantry step or axis knowledge needed.\n'
-            'TSDF: integrates frames using exact kinematic camera poses — '
-            'requires accurate Gantry Step and Axis calibration.'
+            'ICP: frame-to-frame colour ICP — no gantry calibration needed.\n'
+            'TSDF: kinematic poses from gantry step+axis calibration.\n'
+            'Canopy: top-down depth fusion via green-leaf auto-masking —\n'
+            '  recommended for overhead gantry plant scans; produces a mesh.'
         )
+        self.recon_mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         advanced_layout.addRow('Recon Mode:', self.recon_mode_combo)
 
         self.gantry_step_spin = QDoubleSpinBox()
@@ -167,6 +169,16 @@ class DataPanel(QWidget):
         )
         advanced_layout.addRow('TSDF Voxel:', self.tsdf_voxel_spin)
 
+        self.canopy_stride_spin = QSpinBox()
+        self.canopy_stride_spin.setRange(1, 100)
+        self.canopy_stride_spin.setValue(10)
+        self.canopy_stride_spin.setToolTip(
+            'Canopy mode: evaluate every Nth frame during candidate search.\n'
+            'Higher = faster but fewer candidate frames considered.\n'
+            'For ~600-frame datasets: 10 is a good balance (60 frames sampled).'
+        )
+        advanced_layout.addRow('Canopy Stride:', self.canopy_stride_spin)
+
         self.calibrate_btn = QPushButton('Calibrate Gantry')
         self.calibrate_btn.setEnabled(False)
         self.calibrate_btn.setToolTip('Estimate gantry axis and step from RGB/depth frames.')
@@ -260,6 +272,16 @@ class DataPanel(QWidget):
         self.run_btn.setEnabled(rgb_ok and depth_ok)
         self.calibrate_btn.setEnabled(rgb_ok and depth_ok)
 
+    def _on_mode_changed(self, _index: int) -> None:
+        mode = self.recon_mode_combo.currentData()
+        is_canopy = (mode == 'canopy')
+        is_tsdf   = (mode == 'tsdf')
+        self.canopy_stride_spin.setEnabled(is_canopy)
+        self.tsdf_voxel_spin.setEnabled(is_tsdf)
+        self.gantry_step_spin.setEnabled(is_tsdf)
+        self.gantry_axis_combo.setEnabled(is_tsdf)
+        self.calibrate_btn.setEnabled(is_tsdf and bool(self.rgb_edit.text()))
+
     def _on_run(self):
         rgb_dir   = self.rgb_edit.text()
         depth_dir = self.depth_edit.text()
@@ -271,11 +293,14 @@ class DataPanel(QWidget):
         depth_trunc   = self.depth_trunc_spin.value()
         bbox          = self._bbox_from_controls()
         enable_feature_init = self.feature_init_check.isChecked()
-        use_tsdf = bool(self.recon_mode_combo.currentData())
+        mode            = self.recon_mode_combo.currentData()
+        use_tsdf        = (mode == 'tsdf')
+        use_canopy      = (mode == 'canopy')
         mask_background = self.mask_background_check.isChecked()
         tsdf_voxel_m    = self.tsdf_voxel_spin.value()
+        canopy_stride   = self.canopy_stride_spin.value()
 
-        # Quick count check
+        # Quick count check (both flat and ICL-style)
         import glob
         rgb_count = len(glob.glob(os.path.join(rgb_dir, '*.png')))
         if rgb_count == 0:
@@ -288,6 +313,7 @@ class DataPanel(QWidget):
             gantry_step_m, gantry_axis, depth_min_mm, depth_trunc,
             bbox, enable_feature_init, use_tsdf,
             mask_background, tsdf_voxel_m,
+            use_canopy, canopy_stride,
         )
 
     def _on_calibrate(self):

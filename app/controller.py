@@ -5,6 +5,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 from file_io.loader   import load_image_pairs, load_intrinsics, get_default_intrinsics
 from file_io.exporter import save_ply, save_metrics_csv
 from app.worker       import ProcessingWorker
+from app.canopy_worker import CanopyWorker
 from app.capture_worker import CaptureWorker
 from app.calibration_worker import CalibrationWorker
 from app.quality_worker import QualityWorker
@@ -44,6 +45,7 @@ class Controller(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.worker          = None
+        self.canopy_worker   = None
         self.capture_worker  = None
         self.quality_worker  = None
         self.calibration_worker = None
@@ -70,15 +72,22 @@ class Controller(QObject):
         self.gantry = GantryController()
 
     # ---------------------------------------------------------------- run
-    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool, bool, float)
+    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int)
     def on_run_clicked(self, rgb_dir, depth_dir, intrinsics_path, step_size,
                        gantry_step_m_per_frame, gantry_axis,
                        depth_min_mm, depth_trunc, bbox, enable_feature_init,
-                       use_tsdf=False, mask_background=True, tsdf_voxel_m_ui=0.003):
+                       use_tsdf=False, mask_background=True, tsdf_voxel_m_ui=0.003,
+                       use_canopy=False, canopy_stride=10):
         self.n_success   = 0
         self.n_fail      = 0
         self.all_metrics = []
         self.final_pcd   = None
+
+        # --- Canopy mode: runs a completely separate worker ---
+        if use_canopy:
+            self._start_canopy(rgb_dir, depth_dir, intrinsics_path,
+                               depth_min_mm, depth_trunc, canopy_stride)
+            return
 
         try:
             pairs = load_image_pairs(rgb_dir, depth_dir, step=step_size)
@@ -168,6 +177,36 @@ class Controller(QObject):
         self.worker.error.connect(self.error_occurred)
         self.worker.start()
         self.viewer.start()
+
+    def _start_canopy(self, rgb_dir, depth_dir, intrinsics_path,
+                      depth_min_mm, depth_trunc, stride):
+        """Launch a CanopyWorker for the top-down plant fusion pipeline."""
+        from pathlib import Path
+        dataset_root = str(Path(rgb_dir).parent)
+        self.status_changed.emit(f'Starting canopy reconstruction on {dataset_root}...')
+
+        self.canopy_worker = CanopyWorker(
+            dataset_root=dataset_root,
+            intrinsics_path=intrinsics_path,
+            depth_min=int(depth_min_mm) if depth_min_mm else 500,
+            depth_max=int(depth_trunc * 1000) if depth_trunc else 4000,
+            stride=int(stride),
+        )
+        self.canopy_worker.finished.connect(self._on_canopy_finished)
+        self.canopy_worker.error.connect(self.error_occurred)
+        self.canopy_worker.start()
+        self.viewer.start()
+
+    @pyqtSlot(object, str)
+    def _on_canopy_finished(self, pcd, summary_str):
+        self.final_pcd = pcd
+        if pcd is not None and not pcd.is_empty():
+            self.viewer.update(pcd)
+        pt_count = len(pcd.points) if (pcd and not pcd.is_empty()) else 0
+        self.status_changed.emit(
+            f'Canopy done. {pt_count:,} points. Use File menu to export.'
+        )
+        self.reconstruction_complete.emit(pcd, [], [])
 
     @pyqtSlot(str, str, str, float, int)
     def on_calibrate_requested(self, rgb_dir, depth_dir, intrinsics_path, velocity_mps, fps):
