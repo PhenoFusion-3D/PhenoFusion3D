@@ -13,8 +13,10 @@ class DataPanel(QWidget):
 
     # rgb_dir, depth_dir, intrinsics, step, gantry_step_m, gantry_axis,
     # depth_min_mm, depth_trunc_m, bbox, enable_feature_init, use_tsdf,
-    # mask_background, tsdf_voxel_m, use_canopy, canopy_stride
-    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int)
+    # mask_background, tsdf_voxel_m, use_canopy, canopy_stride,
+    # canopy_extras  (dict: max_frames, coverage, smooth_sigma,
+    #                       mask_sensitivity, add_leaf_thickness)
+    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int, object)
     calibrate_requested = pyqtSignal(str, str, str, float, int)
     stop_requested      = pyqtSignal()
 
@@ -179,6 +181,60 @@ class DataPanel(QWidget):
         )
         advanced_layout.addRow('Canopy Stride:', self.canopy_stride_spin)
 
+        self.canopy_max_frames_spin = QSpinBox()
+        self.canopy_max_frames_spin.setRange(3, 30)
+        self.canopy_max_frames_spin.setValue(9)
+        self.canopy_max_frames_spin.setToolTip(
+            'Maximum frames to include in the depth fusion.\n'
+            'More frames = denser fused surface but slower.\n'
+            'Try 9–15 for best quality on clean datasets.'
+        )
+        advanced_layout.addRow('Max Frames:', self.canopy_max_frames_spin)
+
+        self.canopy_coverage_spin = QSpinBox()
+        self.canopy_coverage_spin.setRange(1, 5)
+        self.canopy_coverage_spin.setValue(1)
+        self.canopy_coverage_spin.setToolTip(
+            'Minimum number of frames that must agree on each canvas pixel\n'
+            'before it is kept. 1 = keep all pixels; 2+ = require overlap.\n'
+            'Use 2 to reduce edge speckle when frames overlap well.'
+        )
+        advanced_layout.addRow('Coverage Min:', self.canopy_coverage_spin)
+
+        self.canopy_sigma_spin = QDoubleSpinBox()
+        self.canopy_sigma_spin.setRange(0.5, 12.0)
+        self.canopy_sigma_spin.setDecimals(1)
+        self.canopy_sigma_spin.setSingleStep(0.5)
+        self.canopy_sigma_spin.setValue(3.5)
+        self.canopy_sigma_spin.setToolTip(
+            'Gaussian smoothing sigma applied to the fused depth canvas.\n'
+            'Lower = crisper leaf edges; higher = smoother but blurs fine detail.\n'
+            '2.0–3.5 recommended for dense datasets; 5–7 for sparse/noisy captures.'
+        )
+        advanced_layout.addRow('Depth Sigma:', self.canopy_sigma_spin)
+
+        self.canopy_mask_combo = QComboBox()
+        self.canopy_mask_combo.addItem('Loose  (captures more leaves, may include noise)', userData='loose')
+        self.canopy_mask_combo.addItem('Default  (balanced)',                              userData='default')
+        self.canopy_mask_combo.addItem('Strict  (less noise, may miss pale/yellow leaves)',userData='strict')
+        self.canopy_mask_combo.setCurrentIndex(1)
+        self.canopy_mask_combo.setToolTip(
+            'Green-leaf mask sensitivity.\n'
+            '  Loose:  lower HSV thresholds — keeps more leaf area including edges.\n'
+            '  Default: tuned for healthy green plants under gantry lighting.\n'
+            '  Strict:  higher thresholds — cleaner mask, may miss pale/discoloured leaves.'
+        )
+        advanced_layout.addRow('Mask Sensitivity:', self.canopy_mask_combo)
+
+        self.canopy_thickness_check = QCheckBox('Add leaf thickness layer')
+        self.canopy_thickness_check.setChecked(False)
+        self.canopy_thickness_check.setToolTip(
+            'Duplicate the top-surface point cloud with a small Z offset to simulate\n'
+            'leaf thickness.  Greatly improves side-view appearance without extra\n'
+            'data capture.  Enable when side views look paper-thin.'
+        )
+        advanced_layout.addRow('Leaf Thickness:', self.canopy_thickness_check)
+
         self.calibrate_btn = QPushButton('Calibrate Gantry')
         self.calibrate_btn.setEnabled(False)
         self.calibrate_btn.setToolTip('Estimate gantry axis and step from RGB/depth frames.')
@@ -209,6 +265,9 @@ class DataPanel(QWidget):
         btn_row.addWidget(self.stop_btn)
         layout.addLayout(btn_row)
         layout.addStretch()
+
+        # Initialise enabled/disabled state for the default mode (ICP)
+        self._on_mode_changed(self.recon_mode_combo.currentIndex())
 
     def _add_folder_row(self, parent_layout, label):
         parent_layout.addWidget(QLabel(label))
@@ -276,7 +335,17 @@ class DataPanel(QWidget):
         mode = self.recon_mode_combo.currentData()
         is_canopy = (mode == 'canopy')
         is_tsdf   = (mode == 'tsdf')
-        self.canopy_stride_spin.setEnabled(is_canopy)
+        # Canopy-specific controls
+        for w in (
+            self.canopy_stride_spin,
+            self.canopy_max_frames_spin,
+            self.canopy_coverage_spin,
+            self.canopy_sigma_spin,
+            self.canopy_mask_combo,
+            self.canopy_thickness_check,
+        ):
+            w.setEnabled(is_canopy)
+        # TSDF/ICP-specific controls
         self.tsdf_voxel_spin.setEnabled(is_tsdf)
         self.gantry_step_spin.setEnabled(is_tsdf)
         self.gantry_axis_combo.setEnabled(is_tsdf)
@@ -300,6 +369,14 @@ class DataPanel(QWidget):
         tsdf_voxel_m    = self.tsdf_voxel_spin.value()
         canopy_stride   = self.canopy_stride_spin.value()
 
+        canopy_extras = {
+            'max_frames':        self.canopy_max_frames_spin.value(),
+            'coverage':          self.canopy_coverage_spin.value(),
+            'smooth_sigma':      self.canopy_sigma_spin.value(),
+            'mask_sensitivity':  self.canopy_mask_combo.currentData(),
+            'add_leaf_thickness': self.canopy_thickness_check.isChecked(),
+        }
+
         # Quick count check (both flat and ICL-style)
         import glob
         rgb_count = len(glob.glob(os.path.join(rgb_dir, '*.png')))
@@ -313,7 +390,7 @@ class DataPanel(QWidget):
             gantry_step_m, gantry_axis, depth_min_mm, depth_trunc,
             bbox, enable_feature_init, use_tsdf,
             mask_background, tsdf_voxel_m,
-            use_canopy, canopy_stride,
+            use_canopy, canopy_stride, canopy_extras,
         )
 
     def _on_calibrate(self):

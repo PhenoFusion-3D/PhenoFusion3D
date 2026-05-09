@@ -94,6 +94,27 @@ class CanopyReconstructionConfig:
     canvas_padding: int = 48
     crop_to_mask: bool = True
 
+    # Post-fusion cleanup
+    mesh_cleanup: bool = True
+    """Remove sparse outliers before meshing and trim low-density Poisson faces."""
+
+    mesh_density_quantile: float = 0.01
+    """Poisson mesh faces below this density quantile are removed (0.01 = bottom 1%)."""
+
+    nb_neighbors: int = 30
+    """Neighbours used for statistical outlier removal."""
+
+    outlier_std_ratio: float = 2.0
+    """Points further than mean+std_ratio*sigma from their neighbours are dropped."""
+
+    # Leaf thickness / back-face geometry
+    add_leaf_thickness: bool = False
+    """Duplicate top-surface points offset downward to simulate leaf thickness.
+    Improves side-view appearance; no extra data capture required."""
+
+    leaf_thickness_m: float = 0.003
+    """Vertical offset (metres) for the duplicated back-face layer."""
+
 
 @dataclass
 class CanopyReconstructionResult:
@@ -590,16 +611,46 @@ def _crop_to_mask(
     )
 
 
+def _add_leaf_thickness_points(
+    pcd: o3d.geometry.PointCloud,
+    thickness_m: float,
+) -> o3d.geometry.PointCloud:
+    """Return a new point cloud that includes the original top-surface points
+    plus a duplicate layer offset by *thickness_m* along +Z (further from camera).
+
+    This creates a visually "thick" leaf shell that improves side-view appearance
+    without requiring additional capture angles.
+    """
+    pts  = np.asarray(pcd.points).copy()
+    cols = np.asarray(pcd.colors).copy()
+    back_pts = pts.copy()
+    back_pts[:, 2] += thickness_m          # positive Z = further from camera
+    thick_pcd = o3d.geometry.PointCloud()
+    thick_pcd.points = o3d.utility.Vector3dVector(np.vstack([pts, back_pts]))
+    thick_pcd.colors = o3d.utility.Vector3dVector(np.vstack([cols, cols]))
+    return thick_pcd
+
+
 def _build_mesh_and_point_cloud(
     fused_depth_mm: np.ndarray,
     fused_mask: np.ndarray,
     fused_rgb_bgr: np.ndarray,
     K: np.ndarray,
     z_scale: float = 1.0,
-) -> tuple[o3d.geometry.PointCloud, o3d.geometry.TriangleMesh, float]:
+    do_cleanup: bool = True,
+    nb_neighbors: int = 30,
+    outlier_std_ratio: float = 2.0,
+) -> tuple[o3d.geometry.PointCloud, o3d.geometry.TriangleMesh, "o3d.utility.DoubleVector", float]:
+    """Un-project the fused depth canvas to a 3-D point cloud and Poisson mesh.
+
+    Returns
+    -------
+    pcd, mesh, densities, reference_depth_m
+        *densities* is the per-vertex density array from Poisson reconstruction —
+        use it to trim low-confidence mesh faces with a quantile threshold.
+    """
     fx, fy = float(K[0, 0]), float(abs(K[1, 1]))
     cx, cy = float(K[0, 2]), float(K[1, 2])
-    h, w = fused_depth_mm.shape
 
     ys, xs = np.where(fused_mask & (fused_depth_mm > 0))
     if len(ys) == 0:
@@ -618,15 +669,23 @@ def _build_mesh_and_point_cloud(
     pcd.points = o3d.utility.Vector3dVector(np.column_stack([Xs, Ys, zs]))
     pcd.colors = o3d.utility.Vector3dVector(np.column_stack([Rs, Gs, Bs]))
 
-    reference_depth_m = float(np.median(zs))
+    # Statistical outlier removal
+    if do_cleanup and len(pcd.points) > nb_neighbors:
+        clean, _ = pcd.remove_statistical_outlier(
+            nb_neighbors=nb_neighbors, std_ratio=outlier_std_ratio
+        )
+        if not clean.is_empty():
+            pcd = clean
 
-    # Poisson mesh from the canopy point cloud
+    reference_depth_m = float(np.median(np.asarray(pcd.points)[:, 2]))
+
+    densities = o3d.utility.DoubleVector()
     try:
         pcd.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30)
         )
         pcd.orient_normals_consistent_tangent_plane(k=15)
-        mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
             pcd, depth=8, linear_fit=True
         )
         mesh.compute_vertex_normals()
@@ -634,7 +693,7 @@ def _build_mesh_and_point_cloud(
         print(f"[canopy] Mesh generation failed ({exc}); returning empty mesh.")
         mesh = o3d.geometry.TriangleMesh()
 
-    return pcd, mesh, reference_depth_m
+    return pcd, mesh, densities, reference_depth_m
 
 
 # ---------------------------------------------------------------------------
@@ -879,21 +938,48 @@ def reconstruct_canopy(
     cv2.imwrite(str(output_dir / "fused_depth_vis.png"), preview_depth)
 
     # 3-D reconstruction
-    pcd, mesh, reference_depth_m = _build_mesh_and_point_cloud(
+    pcd, mesh, densities, reference_depth_m = _build_mesh_and_point_cloud(
         fused_depth_mm=fused_depth_full,
         fused_mask=fused_mask,
         fused_rgb_bgr=fused_rgb,
         K=K_canvas,
         z_scale=cfg.z_scale,
+        do_cleanup=cfg.mesh_cleanup,
+        nb_neighbors=cfg.nb_neighbors,
+        outlier_std_ratio=cfg.outlier_std_ratio,
     )
+
+    # Trim low-density Poisson artefacts (floaters around the mesh boundary)
+    if cfg.mesh_cleanup and len(densities) > 0:
+        density_arr = np.asarray(densities)
+        density_thresh = np.quantile(density_arr, max(0.0, min(1.0, cfg.mesh_density_quantile)))
+        mesh.remove_vertices_by_mask(density_arr < density_thresh)
+        print(
+            f"[canopy] Mesh after density trim: "
+            f"{len(np.asarray(mesh.triangles)):,} triangles "
+            f"(quantile={cfg.mesh_density_quantile:.3f}, "
+            f"threshold={density_thresh:.4f})"
+        )
+
+    # Leaf thickness: duplicate top-surface layer offset in Z for better side views
+    viewer_pcd = pcd
+    if cfg.add_leaf_thickness and not pcd.is_empty():
+        viewer_pcd = _add_leaf_thickness_points(pcd, cfg.leaf_thickness_m)
+        thick_path = output_dir / "canopy_points_thick.ply"
+        o3d.io.write_point_cloud(str(thick_path), viewer_pcd)
+        print(
+            f"[canopy] Leaf thickness layer added "
+            f"({cfg.leaf_thickness_m * 1000:.1f} mm offset, "
+            f"{len(np.asarray(viewer_pcd.points)):,} points total)."
+        )
 
     point_cloud_path = output_dir / "canopy_points.ply"
     mesh_path        = output_dir / "canopy_mesh.ply"
     viewer_path      = output_dir / "canopy_viewer.html"
     o3d.io.write_point_cloud(str(point_cloud_path), pcd)
     o3d.io.write_triangle_mesh(str(mesh_path), mesh)
-    write_point_cloud_viewer(pcd, viewer_path, title=f"{root.name} canopy")
-    _save_previews(output_dir, pcd)
+    write_point_cloud_viewer(viewer_pcd, viewer_path, title=f"{root.name} canopy")
+    _save_previews(output_dir, viewer_pcd)
 
     summary = {
         "record_path": str(root.resolve()),
@@ -911,6 +997,7 @@ def reconstruct_canopy(
         "reference_token": reference_token,
         "reference_depth_m": reference_depth_m,
         "final_point_count": len(np.asarray(pcd.points)),
+        "viewer_point_count": len(np.asarray(viewer_pcd.points)),
         "final_triangle_count": len(np.asarray(mesh.triangles)),
         "config": asdict(cfg),
         "frames": frame_info,

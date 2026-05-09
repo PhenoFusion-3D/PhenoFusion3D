@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         self.data_panel.run_requested.connect(
             lambda rgb, depth, intr, step, gantry_step, axis, depth_min,
                    depth_trunc, bbox, feature_init, use_tsdf,
-                   mask_bg, tsdf_voxel, use_canopy, canopy_stride: \
+                   mask_bg, tsdf_voxel, use_canopy, canopy_stride, canopy_extras: \
                 self.controller.on_quality_paths(
                     rgb, depth, intr, step, gantry_step, axis, depth_min,
                     depth_trunc, bbox, feature_init

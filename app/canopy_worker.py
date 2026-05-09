@@ -5,6 +5,13 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from processing.canopy import CanopyReconstructionConfig, reconstruct_canopy
 
+# Mask sensitivity presets — map UI label → config field overrides
+_MASK_PRESETS = {
+    "loose":   {"mask_s_min": 25, "mask_v_min": 20, "mask_exg_min": 10, "min_mask_area": 100_000},
+    "default": {},
+    "strict":  {"mask_s_min": 65, "mask_v_min": 55, "mask_exg_min": 35, "min_mask_area": 200_000},
+}
+
 
 class CanopyWorker(QThread):
     """Run :func:`reconstruct_canopy` in a background thread.
@@ -30,26 +37,39 @@ class CanopyWorker(QThread):
         stride: int = 10,
         max_frames: int = 9,
         max_candidates: int = 40,
+        coverage_threshold: int = 1,
+        smooth_sigma: float = 3.5,
+        mask_sensitivity: str = 'default',
+        add_leaf_thickness: bool = False,
         parent=None,
     ):
         super().__init__(parent)
-        self.dataset_root    = dataset_root
-        self.intrinsics_path = intrinsics_path
-        self.depth_min       = depth_min
-        self.depth_max       = depth_max
-        self.stride          = stride
-        self.max_frames      = max_frames
-        self.max_candidates  = max_candidates
+        self.dataset_root       = dataset_root
+        self.intrinsics_path    = intrinsics_path
+        self.depth_min          = depth_min
+        self.depth_max          = depth_max
+        self.stride             = stride
+        self.max_frames         = max_frames
+        self.max_candidates     = max_candidates
+        self.coverage_threshold = coverage_threshold
+        self.smooth_sigma       = smooth_sigma
+        self.mask_sensitivity   = mask_sensitivity
+        self.add_leaf_thickness = add_leaf_thickness
 
     def run(self):
         try:
+            mask_overrides = _MASK_PRESETS.get(self.mask_sensitivity, {})
             cfg = CanopyReconstructionConfig(
                 depth_min=self.depth_min,
                 depth_max=self.depth_max,
                 sample_stride=self.stride,
                 max_frames=self.max_frames,
                 max_candidates=self.max_candidates,
+                coverage_threshold=self.coverage_threshold,
+                smooth_sigma=self.smooth_sigma,
+                add_leaf_thickness=self.add_leaf_thickness,
                 auto_mask=True,
+                **mask_overrides,
             )
             result = reconstruct_canopy(self.dataset_root, config=cfg)
 

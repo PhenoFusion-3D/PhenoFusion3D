@@ -72,12 +72,12 @@ class Controller(QObject):
         self.gantry = GantryController()
 
     # ---------------------------------------------------------------- run
-    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int)
+    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool, bool, float, bool, int, object)
     def on_run_clicked(self, rgb_dir, depth_dir, intrinsics_path, step_size,
                        gantry_step_m_per_frame, gantry_axis,
                        depth_min_mm, depth_trunc, bbox, enable_feature_init,
                        use_tsdf=False, mask_background=True, tsdf_voxel_m_ui=0.003,
-                       use_canopy=False, canopy_stride=10):
+                       use_canopy=False, canopy_stride=10, canopy_extras=None):
         self.n_success   = 0
         self.n_fail      = 0
         self.all_metrics = []
@@ -86,7 +86,8 @@ class Controller(QObject):
         # --- Canopy mode: runs a completely separate worker ---
         if use_canopy:
             self._start_canopy(rgb_dir, depth_dir, intrinsics_path,
-                               depth_min_mm, depth_trunc, canopy_stride)
+                               depth_min_mm, depth_trunc, canopy_stride,
+                               canopy_extras or {})
             return
 
         try:
@@ -179,18 +180,24 @@ class Controller(QObject):
         self.viewer.start()
 
     def _start_canopy(self, rgb_dir, depth_dir, intrinsics_path,
-                      depth_min_mm, depth_trunc, stride):
+                      depth_min_mm, depth_trunc, stride, canopy_extras=None):
         """Launch a CanopyWorker for the top-down plant fusion pipeline."""
         from pathlib import Path
         dataset_root = str(Path(rgb_dir).parent)
         self.status_changed.emit(f'Starting canopy reconstruction on {dataset_root}...')
 
+        extras = canopy_extras or {}
         self.canopy_worker = CanopyWorker(
             dataset_root=dataset_root,
             intrinsics_path=intrinsics_path,
             depth_min=int(depth_min_mm) if depth_min_mm else 500,
             depth_max=int(depth_trunc * 1000) if depth_trunc else 4000,
             stride=int(stride),
+            max_frames=int(extras.get('max_frames', 9)),
+            coverage_threshold=int(extras.get('coverage', 1)),
+            smooth_sigma=float(extras.get('smooth_sigma', 3.5)),
+            mask_sensitivity=str(extras.get('mask_sensitivity', 'default')),
+            add_leaf_thickness=bool(extras.get('add_leaf_thickness', False)),
         )
         self.canopy_worker.finished.connect(self._on_canopy_finished)
         self.canopy_worker.error.connect(self.error_occurred)
