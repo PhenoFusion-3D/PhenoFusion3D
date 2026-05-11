@@ -56,9 +56,14 @@ class RealSenseCapture(CaptureBackend):
             # Match stakeholder rospy_thread_fin_1.py: high-accuracy preset on D405
             depth_sensor = profile.get_device().first_depth_sensor()
             try:
-                depth_sensor.set_option(rs.option.visual_preset, 4)
+                depth_sensor.set_option(
+                    rs.option.visual_preset, int(params.realsense_visual_preset)
+                )
             except Exception:
                 pass
+            depth_filters = self._make_depth_filters(rs, params)
+            if params.preserve_raw_depth:
+                os.makedirs(os.path.join(self.out_dir, "depth_raw"), exist_ok=True)
 
             # Save intrinsics (color + depth streams)
             self._update_session_from_profile(profile, rs)
@@ -89,6 +94,14 @@ class RealSenseCapture(CaptureBackend):
                 if not depth_frame or not color_frame:
                     continue
 
+                timestamp_s = time.time()
+                raw_depth_img = np.asanyarray(depth_frame.get_data())
+                if params.preserve_raw_depth:
+                    cv2.imwrite(
+                        os.path.join(self.out_dir, "depth_raw", f"{i}.png"),
+                        raw_depth_img,
+                    )
+                depth_frame = self._apply_depth_filters(depth_frame, depth_filters)
                 depth_img = np.asanyarray(depth_frame.get_data())
                 color_img = np.asanyarray(color_frame.get_data())
                 if color_format == rs.format.rgb8:
@@ -96,6 +109,7 @@ class RealSenseCapture(CaptureBackend):
 
                 cv2.imwrite(os.path.join(self.out_dir, "rgb",   f"{i}.png"), color_img)
                 cv2.imwrite(os.path.join(self.out_dir, "depth", f"{i}.png"), depth_img)
+                self._record_frame_metadata(i, timestamp_s=timestamp_s)
 
                 i += 1
                 on_progress(i, total_estimate or i)
@@ -296,3 +310,23 @@ class RealSenseCapture(CaptureBackend):
                     json.dump(payload, f, indent=4)
             except Exception as e:
                 print(f"[realsense_capture] WARNING: failed to save {fname}: {e}")
+
+    def _make_depth_filters(self, rs, params: CaptureParams) -> list:
+        if not params.enable_depth_filters:
+            return []
+        filters = []
+        for factory in (rs.spatial_filter, rs.temporal_filter, rs.hole_filling_filter):
+            try:
+                filters.append(factory())
+            except Exception:
+                pass
+        return filters
+
+    def _apply_depth_filters(self, depth_frame, filters: list):
+        out = depth_frame
+        for filt in filters:
+            try:
+                out = filt.process(out)
+            except Exception:
+                return out
+        return out

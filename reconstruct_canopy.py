@@ -6,7 +6,7 @@ Usage examples
 # Single dataset, auto-masking (recommended for new plant datasets):
 python reconstruct_canopy.py --input data/main/test_plant_20230809133659
 
-# Specify output folder and use every 20th frame for fast preview:
+# Specify output folder and use every 20th frame for a fast preview:
 python reconstruct_canopy.py \\
     --input data/main/test_plant_20230809133659 \\
     --output data/main/test_plant_20230809133659/canopy_preview \\
@@ -25,7 +25,8 @@ Notes
 * Works with both flat-layout datasets (``rgb_N.png`` / ``depth_N.png``)
   and ICL-style datasets (``rgb/N.png`` / ``depth/N.png``).
 * Requires ``kdc_intrinsics.txt`` in the dataset root.
-* The output directory receives ``canopy_points.ply``, ``canopy_mesh.ply``,
+* The output directory receives ``canopy_points.ply``, ``canopy_mesh.ply``
+  (measurement mesh), ``canopy_display_mesh.ply`` (viewer mesh),
   ``canopy_viewer.html`` (interactive WebGL), ``fused_rgb_masked.png``, and
   ``canopy_summary.json``.
 """
@@ -68,12 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Process every sub-folder of --input as a separate dataset.")
     p.add_argument("--mask-dir",   default=None,
                    help="Pre-computed mask directory.  Auto-masking used if omitted.")
-    p.add_argument("--stride",     type=int, default=10,
-                   help="Evaluate every Nth frame during candidate search (default 10).")
-    p.add_argument("--max-frames", type=int, default=9,
-                   help="Maximum frames to fuse (default 9).")
-    p.add_argument("--max-candidates", type=int, default=40,
-                   help="Hard cap on the candidate pool (default 40).")
+    p.add_argument("--stride",     type=int, default=1,
+                   help="Evaluate every Nth frame during candidate search (default 1 = all frames).")
+    p.add_argument("--max-frames", type=int, default=15,
+                   help="Maximum frames to fuse (default 15).")
+    p.add_argument("--max-candidates", type=int, default=0,
+                   help="Optional post-detection candidate shortlist (default 0 = no cap).")
     p.add_argument("--min-mask-area", type=int, default=180_000,
                    help="Minimum plant-mask area in pixels (default 180000).")
     p.add_argument("--coverage",   type=int, default=1,
@@ -84,8 +85,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Far-clip depth in mm (default 4000).")
     p.add_argument("--z-scale",    type=float, default=1.0,
                    help="Vertical exaggeration for the 3-D output (default 1.0).")
+    p.add_argument("--max-hole-fill-px", type=int, default=24,
+                   help="Maximum inpaint distance from real depth in pixels (default 24).")
+    p.add_argument("--max-triangle-jump", type=float, default=0.025,
+                   help="Maximum height jump for neighbouring mesh triangles in metres.")
     p.add_argument("--no-auto-mask", action="store_true",
                    help="Disable green-leaf auto-masking (requires --mask-dir).")
+    p.add_argument("--no-leaf-thickness", action="store_true",
+                   help="Disable display-only thickness/skirt geometry in the HTML viewer.")
+    p.add_argument("--poisson", action="store_true",
+                   help="Use experimental Poisson meshing instead of the default height-field mesh.")
     return p
 
 
@@ -114,7 +123,11 @@ def main() -> None:
             depth_min=args.depth_min,
             depth_max=args.depth_max,
             z_scale=args.z_scale,
+            max_hole_fill_distance_px=args.max_hole_fill_px,
+            max_triangle_height_jump_m=args.max_triangle_jump,
             auto_mask=not args.no_auto_mask,
+            add_leaf_thickness=not args.no_leaf_thickness,
+            use_poisson_mesh=args.poisson,
             output_dir=(
                 args.output
                 if (args.output and not args.batch)

@@ -162,10 +162,13 @@ def _run_one(
             "point_count":        result.final_point_count,
             "triangle_count":     result.final_triangle_count,
             "summary_path":       result.summary_path,
+            "viewer_path":        result.viewer_path,
             "fused_rgb_path":     str(run_dir / "fused_rgb_masked.png"),
             "fused_depth_path":   str(run_dir / "fused_depth_vis.png"),
+            "confidence_path":    str(run_dir / "fused_confidence.png"),
             "oblique_path":       str(run_dir / "canopy_oblique.png"),
             "mask_path":          str(run_dir / "fused_mask.png"),
+            "mosaic_path":        str(run_dir / "selected_frames_mosaic.jpg"),
         })
         print(
             f"  [{run_id}] OK  {result.frames_used}/{result.frames_available} frames, "
@@ -281,8 +284,11 @@ def _build_report(sweep_dir: Path, runs: list[dict], dataset: str, grid: dict) -
     for run in successes:
         fused_uri   = _img_to_data_uri(Path(run.get("fused_rgb_path", "")))
         depth_uri   = _depth_img_to_data_uri(Path(run.get("fused_depth_path", "")))
+        conf_uri    = _depth_img_to_data_uri(Path(run.get("confidence_path", "")))
         oblique_uri = _img_to_data_uri(Path(run.get("oblique_path", "")))
         mask_uri    = _img_to_data_uri(Path(run.get("mask_path", "")))
+        mosaic_uri  = _img_to_data_uri(Path(run.get("mosaic_path", "")))
+        viewer_rel = os.path.relpath(run.get("viewer_path", ""), start=sweep_dir)
 
         best_badge = " &#9733; BEST" if run["run_id"] == best_id else ""
         cards_html.append(
@@ -299,12 +305,19 @@ def _build_report(sweep_dir: Path, runs: list[dict], dataset: str, grid: dict) -
             f'</div>'
             + (f'<div class="card-title" style="margin-top:6px">Fused RGB</div>'
                f'<img src="{fused_uri}" alt="fused rgb" />' if fused_uri else "")
+            + (f'<div class="card-title">Selected frames</div>'
+               f'<img src="{mosaic_uri}" alt="selected frames" />' if mosaic_uri else "")
             + (f'<div class="card-title">Depth preview</div>'
                f'<img src="{depth_uri}" alt="depth" />' if depth_uri else "")
+            + (f'<div class="card-title">Depth confidence</div>'
+               f'<img src="{conf_uri}" alt="confidence" />' if conf_uri else "")
             + (f'<div class="card-title">Oblique 3-D view</div>'
                f'<img src="{oblique_uri}" alt="oblique" />' if oblique_uri else "")
             + (f'<div class="card-title">Fused mask</div>'
                f'<img src="{mask_uri}" alt="mask" />' if mask_uri else "")
+            + (f'<div class="run-label" style="margin-top:6px">'
+               f'<a href="{viewer_rel}" style="color:#7ec8e3">Open mesh viewer</a></div>'
+               if run.get("viewer_path") else "")
             + "</div>"
         )
 
@@ -375,8 +388,8 @@ def main():
         help="Override coverage_threshold values (e.g. --coverage 1 2)."
     )
     ap.add_argument(
-        "--stride", type=int, default=10, metavar="N",
-        help="Sample every Nth frame (default: 10)."
+        "--stride", type=int, default=1, metavar="N",
+        help="Sample every Nth frame (default: 1 = all frames)."
     )
     ap.add_argument(
         "--depth-min", type=int, default=500,
@@ -387,8 +400,16 @@ def main():
         help="Far-clip depth (mm, default: 4000)."
     )
     ap.add_argument(
-        "--leaf-thickness", type=float, default=0.0,
-        help="Add back-face layer with this thickness in metres (0 = disabled)."
+        "--leaf-thickness", type=float, default=0.003,
+        help="Display-only back-face/skirt thickness in metres (0 = disabled)."
+    )
+    ap.add_argument(
+        "--max-hole-fill-px", type=int, default=24,
+        help="Maximum inpaint distance from real depth in pixels."
+    )
+    ap.add_argument(
+        "--max-triangle-jump", type=float, default=0.025,
+        help="Maximum height jump for neighbouring mesh triangles in metres."
     )
     ap.add_argument(
         "--no-cleanup", action="store_true",
@@ -431,6 +452,8 @@ def main():
         "mesh_cleanup":     not args.no_cleanup,
         "add_leaf_thickness": args.leaf_thickness > 0,
         "leaf_thickness_m": args.leaf_thickness if args.leaf_thickness > 0 else 0.003,
+        "max_hole_fill_distance_px": args.max_hole_fill_px,
+        "max_triangle_height_jump_m": args.max_triangle_jump,
     }
 
     print(f"\nCanopy parameter sweep on: {dataset_root.name}")

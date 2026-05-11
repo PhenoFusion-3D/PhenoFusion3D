@@ -40,6 +40,11 @@ class CaptureParams:
     # RealSense-only mode: capture for N seconds (-1 = manual stop)
     duration_s: float = 10.0
 
+    # Depth handling
+    enable_depth_filters: bool = True
+    preserve_raw_depth: bool = False
+    realsense_visual_preset: int = 4
+
     # Naming -- always 0.png, 1.png, ... (matches load_image_pairs default)
     naming: str = "numeric"
 
@@ -55,9 +60,16 @@ class CaptureSession:
     velocity_mps: float
     gantry_axis: int
     end_position_m: float
+    duration_s: float = 0.0
+    depth_filtering: dict = field(default_factory=dict)
     n_frames: int = 0
     # frame_index (int) -> gantry position (metres) when available
     frame_positions: dict = field(default_factory=dict)
+    # frame_index (int) -> capture timestamp (seconds since epoch when available)
+    frame_timestamps: dict = field(default_factory=dict)
+    actual_frame_intervals_ms: list = field(default_factory=list)
+    actual_fps_estimate: float = 0.0
+    actual_spacing_median_m: float = 0.0
 
 
 class CaptureBackend(abc.ABC):
@@ -113,10 +125,17 @@ class CaptureBackend(abc.ABC):
                 velocity_mps=params.velocity_mps,
                 gantry_axis=params.gantry_axis,
                 end_position_m=params.end_position_m,
+                duration_s=params.duration_s,
+                depth_filtering={
+                    "enabled": bool(params.enable_depth_filters),
+                    "preserve_raw_depth": bool(params.preserve_raw_depth),
+                    "realsense_visual_preset": int(params.realsense_visual_preset),
+                },
             )
 
             n = self._run(params, on_progress or (lambda i, t: None))
             self.session.n_frames = n
+            self._finalize_session_metrics()
             self._write_session()
 
             if on_done:
@@ -150,5 +169,54 @@ class CaptureBackend(abc.ABC):
             json.dump(asdict(self.session), f, indent=2)
 
     def _record_position(self, frame_idx: int, position_m: float) -> None:
+        self._record_frame_metadata(frame_idx, position_m=position_m)
+
+    def _record_frame_metadata(
+        self,
+        frame_idx: int,
+        *,
+        timestamp_s: float | None = None,
+        position_m: float | None = None,
+    ) -> None:
         if self.session is not None:
-            self.session.frame_positions[str(frame_idx)] = float(position_m)
+            key = str(frame_idx)
+            if timestamp_s is not None:
+                self.session.frame_timestamps[key] = float(timestamp_s)
+            if position_m is not None:
+                self.session.frame_positions[key] = float(position_m)
+
+    def _finalize_session_metrics(self) -> None:
+        if self.session is None:
+            return
+        try:
+            ordered_ts = [
+                self.session.frame_timestamps[k]
+                for k in sorted(self.session.frame_timestamps, key=lambda x: int(x))
+            ]
+            intervals = [
+                1000.0 * (b - a)
+                for a, b in zip(ordered_ts[:-1], ordered_ts[1:])
+                if b > a
+            ]
+            self.session.actual_frame_intervals_ms = intervals
+            if intervals:
+                median_ms = sorted(intervals)[len(intervals) // 2]
+                if median_ms > 0:
+                    self.session.actual_fps_estimate = 1000.0 / median_ms
+        except Exception:
+            pass
+
+        try:
+            ordered_pos = [
+                self.session.frame_positions[k]
+                for k in sorted(self.session.frame_positions, key=lambda x: int(x))
+            ]
+            spacings = [
+                abs(b - a)
+                for a, b in zip(ordered_pos[:-1], ordered_pos[1:])
+                if abs(b - a) > 1e-12
+            ]
+            if spacings:
+                self.session.actual_spacing_median_m = sorted(spacings)[len(spacings) // 2]
+        except Exception:
+            pass

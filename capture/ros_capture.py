@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import time
 from typing import Callable
 
 import cv2
@@ -90,9 +91,14 @@ class RosCapture(CaptureBackend):
         try:
             depth_sensor = profile.get_device().first_depth_sensor()
             try:
-                depth_sensor.set_option(rs.option.visual_preset, 4)  # high-accuracy on D405
+                depth_sensor.set_option(
+                    rs.option.visual_preset, int(params.realsense_visual_preset)
+                )
             except Exception:
                 pass
+            depth_filters = self._make_depth_filters(rs, params)
+            if params.preserve_raw_depth:
+                os.makedirs(os.path.join(self.out_dir, "depth_raw"), exist_ok=True)
 
             self._save_intrinsics(profile, rs)
 
@@ -132,20 +138,26 @@ class RosCapture(CaptureBackend):
             try:
                 while not rospy.is_shutdown() and not self._stop_flag:
                     start_moving()
-                    self._capture_one(pipeline, align, i)
-                    self._record_position(i, self._current_position)
-                    i += 1
-                    on_progress(i, 0)  # unknown total -> 0
+                    captured_at = self._capture_one(pipeline, align, i, params, depth_filters)
+                    if captured_at is not None:
+                        self._record_frame_metadata(
+                            i, timestamp_s=captured_at, position_m=self._current_position
+                        )
+                        i += 1
+                        on_progress(i, 0)  # unknown total -> 0
 
                     if self._current_position != 0.0 and self._current_position >= params.end_position_m:
                         stop_moving()
                         break
 
                     # Stakeholder calls capture_images twice per loop -- replicate
-                    self._capture_one(pipeline, align, i)
-                    self._record_position(i, self._current_position)
-                    i += 1
-                    on_progress(i, 0)
+                    captured_at = self._capture_one(pipeline, align, i, params, depth_filters)
+                    if captured_at is not None:
+                        self._record_frame_metadata(
+                            i, timestamp_s=captured_at, position_m=self._current_position
+                        )
+                        i += 1
+                        on_progress(i, 0)
             finally:
                 stop_moving()
                 joint_sub.unregister()
@@ -158,20 +170,36 @@ class RosCapture(CaptureBackend):
                 pass
 
     # ------------------------------------------------------------------ I/O
-    def _capture_one(self, pipeline, align, idx: int) -> None:
+    def _capture_one(
+        self,
+        pipeline,
+        align,
+        idx: int,
+        params: CaptureParams,
+        depth_filters: list,
+    ) -> float | None:
         frames = pipeline.wait_for_frames()
         aligned = align.process(frames)
 
         depth_frame = aligned.get_depth_frame()
         color_frame = aligned.get_color_frame()
         if not depth_frame or not color_frame:
-            return
+            return None
 
+        timestamp_s = time.time()
+        raw_depth_img = np.asanyarray(depth_frame.get_data())
+        if params.preserve_raw_depth:
+            cv2.imwrite(
+                os.path.join(self.out_dir, "depth_raw", f"{idx}.png"),
+                raw_depth_img,
+            )
+        depth_frame = self._apply_depth_filters(depth_frame, depth_filters)
         depth_img = np.asanyarray(depth_frame.get_data())
         color_img = np.asanyarray(color_frame.get_data())
 
         cv2.imwrite(os.path.join(self.out_dir, "rgb",   f"{idx}.png"), color_img)
         cv2.imwrite(os.path.join(self.out_dir, "depth", f"{idx}.png"), depth_img)
+        return timestamp_s
 
     def _save_intrinsics(self, profile, rs) -> None:
         for stream_kind, fname in (
@@ -195,3 +223,23 @@ class RosCapture(CaptureBackend):
                     json.dump(payload, f, indent=4)
             except Exception as e:
                 print(f"[ros_capture] WARNING: failed to save {fname}: {e}")
+
+    def _make_depth_filters(self, rs, params: CaptureParams) -> list:
+        if not params.enable_depth_filters:
+            return []
+        filters = []
+        for factory in (rs.spatial_filter, rs.temporal_filter, rs.hole_filling_filter):
+            try:
+                filters.append(factory())
+            except Exception:
+                pass
+        return filters
+
+    def _apply_depth_filters(self, depth_frame, filters: list):
+        out = depth_frame
+        for filt in filters:
+            try:
+                out = filt.process(out)
+            except Exception:
+                return out
+        return out

@@ -24,6 +24,8 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         self.controller = Controller(self)
+        self._quality_after_capture = False
+        self._reconstruct_after_quality = False
 
         self._build_menu()
         self._build_layout()
@@ -160,10 +162,12 @@ class MainWindow(QMainWindow):
 
         # Capture panel -> controller -> capture panel
         self.capture_panel.capture_requested.connect(self.controller.on_capture_clicked)
+        self.capture_panel.capture_analyze_requested.connect(self._on_capture_analyze_requested)
         self.capture_panel.capture_stop_requested.connect(self.controller.on_capture_stop)
         self.controller.capture_progress.connect(self.capture_panel.on_progress)
         self.controller.capture_complete.connect(self._on_capture_complete)
         self.controller.capture_error.connect(self.capture_panel.on_error)
+        self.controller.capture_error.connect(self._on_capture_pipeline_error)
 
         # Gantry panel -> controller -> gantry panel
         self.gantry_panel.jog_requested.connect(self.controller.on_gantry_jog)
@@ -188,7 +192,9 @@ class MainWindow(QMainWindow):
         self.quality_panel.full_requested.connect(self._on_full_report_requested)
         self.controller.quality_progress.connect(self.quality_panel.on_progress)
         self.controller.quality_ready.connect(self.quality_panel.show_report)
+        self.controller.quality_ready.connect(self._maybe_reconstruct_after_quality)
         self.controller.quality_error.connect(self.quality_panel.on_error)
+        self.controller.quality_error.connect(self._on_quality_pipeline_error)
 
         # Controller -> UI updates
         self.controller.status_changed.connect(self.status.showMessage)
@@ -212,7 +218,48 @@ class MainWindow(QMainWindow):
         self.data_panel.set_paths(rgb_dir, depth_dir, intr)
         self.capture_panel.on_finished(out_dir, n_frames)
         # Tell the controller about these paths so Quality Check can use them too
-        self.controller.on_quality_paths(rgb_dir, depth_dir, intr, 1)
+        self.controller.on_quality_paths(
+            rgb_dir,
+            depth_dir,
+            intr,
+            self.data_panel.step_spin.value(),
+            self.data_panel.gantry_step_spin.value() / 1000.0,
+            self.data_panel.gantry_axis_combo.currentIndex(),
+            self.data_panel.depth_min_spin.value(),
+            self.data_panel.depth_trunc_spin.value(),
+            self.data_panel._bbox_from_controls(),
+            self.data_panel.feature_init_check.isChecked(),
+        )
+        if self._quality_after_capture:
+            self._quality_after_capture = False
+            self._reconstruct_after_quality = True
+            self.quality_panel.set_running(True)
+            self.controller.on_quick_check_clicked()
+
+    @pyqtSlot(str, str, float, float, int, float, bool, bool)
+    def _on_capture_analyze_requested(
+        self,
+        backend_pref,
+        out_root,
+        velocity_mps,
+        end_position_m,
+        fps,
+        duration_s,
+        enable_depth_filters,
+        preserve_raw_depth,
+    ):
+        self._quality_after_capture = True
+        self._reconstruct_after_quality = False
+        self.controller.on_capture_clicked(
+            backend_pref,
+            out_root,
+            velocity_mps,
+            end_position_m,
+            fps,
+            duration_s,
+            enable_depth_filters,
+            preserve_raw_depth,
+        )
 
     def _on_quick_check_requested(self):
         # Push current paths into controller before triggering the worker
@@ -247,6 +294,22 @@ class MainWindow(QMainWindow):
         self.quality_panel.set_running(True)
         self.controller.on_full_report_clicked()
 
+    @pyqtSlot(object)
+    def _maybe_reconstruct_after_quality(self, _report):
+        if not self._reconstruct_after_quality:
+            return
+        self._reconstruct_after_quality = False
+        self.data_panel._on_run()
+
+    @pyqtSlot(str)
+    def _on_capture_pipeline_error(self, _msg):
+        self._quality_after_capture = False
+        self._reconstruct_after_quality = False
+
+    @pyqtSlot(str)
+    def _on_quality_pipeline_error(self, _msg):
+        self._reconstruct_after_quality = False
+
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
@@ -268,6 +331,8 @@ class MainWindow(QMainWindow):
     def _on_error(self, msg):
         QMessageBox.critical(self, 'Processing Error', msg)
         self.data_panel.set_running(False)
+        self._quality_after_capture = False
+        self._reconstruct_after_quality = False
         self.status.showMessage('Error - see dialog')
 
     def _export_ply(self):

@@ -34,13 +34,13 @@ class CanopyWorker(QThread):
         intrinsics_path: str = '',
         depth_min: int = 500,
         depth_max: int = 4_000,
-        stride: int = 10,
-        max_frames: int = 9,
-        max_candidates: int = 40,
+        stride: int = 1,
+        max_frames: int = 15,
+        max_candidates: int = 0,
         coverage_threshold: int = 1,
-        smooth_sigma: float = 3.5,
+        smooth_sigma: float = 2.0,
         mask_sensitivity: str = 'default',
-        add_leaf_thickness: bool = False,
+        add_leaf_thickness: bool = True,
         parent=None,
     ):
         super().__init__(parent)

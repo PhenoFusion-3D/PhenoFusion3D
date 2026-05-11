@@ -77,7 +77,7 @@ class Controller(QObject):
                        gantry_step_m_per_frame, gantry_axis,
                        depth_min_mm, depth_trunc, bbox, enable_feature_init,
                        use_tsdf=False, mask_background=True, tsdf_voxel_m_ui=0.003,
-                       use_canopy=False, canopy_stride=10, canopy_extras=None):
+                       use_canopy=False, canopy_stride=1, canopy_extras=None):
         self.n_success   = 0
         self.n_fail      = 0
         self.all_metrics = []
@@ -193,11 +193,12 @@ class Controller(QObject):
             depth_min=int(depth_min_mm) if depth_min_mm else 500,
             depth_max=int(depth_trunc * 1000) if depth_trunc else 4000,
             stride=int(stride),
-            max_frames=int(extras.get('max_frames', 9)),
+            max_frames=int(extras.get('max_frames', 15)),
+            max_candidates=int(extras.get('max_candidates', 0)),
             coverage_threshold=int(extras.get('coverage', 1)),
-            smooth_sigma=float(extras.get('smooth_sigma', 3.5)),
+            smooth_sigma=float(extras.get('smooth_sigma', 2.0)),
             mask_sensitivity=str(extras.get('mask_sensitivity', 'default')),
-            add_leaf_thickness=bool(extras.get('add_leaf_thickness', False)),
+            add_leaf_thickness=bool(extras.get('add_leaf_thickness', True)),
         )
         self.canopy_worker.finished.connect(self._on_canopy_finished)
         self.canopy_worker.error.connect(self.error_occurred)
@@ -278,15 +279,18 @@ class Controller(QObject):
         self.reconstruction_complete.emit(final_pcd, succeed, fail)
 
     # ---------------------------------------------------------------- capture
-    @pyqtSlot(str, str, float, float, int, float)
+    @pyqtSlot(str, str, float, float, int, float, bool, bool)
     def on_capture_clicked(self, backend_pref, out_root, velocity_mps,
-                           end_position_m, fps, duration_s):
+                           end_position_m, fps, duration_s,
+                           enable_depth_filters=True, preserve_raw_depth=False):
         params = CaptureParams(
             out_root=out_root or 'data/captures',
             fps=fps,
             velocity_mps=velocity_mps,
             end_position_m=end_position_m,
             duration_s=duration_s,
+            enable_depth_filters=enable_depth_filters,
+            preserve_raw_depth=preserve_raw_depth,
         )
         self.status_changed.emit(f'Capture starting (backend={backend_pref})...')
         self.capture_started.emit()

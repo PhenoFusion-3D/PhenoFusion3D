@@ -10,7 +10,7 @@ import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
     QLineEdit, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -19,8 +19,10 @@ from capture import ros_available
 
 class CapturePanel(QWidget):
 
-    # backend_pref, out_root, velocity_mps, end_position_m, fps, duration_s
-    capture_requested      = pyqtSignal(str, str, float, float, int, float)
+    # backend_pref, out_root, velocity_mps, end_position_m, fps, duration_s,
+    # enable_depth_filters, preserve_raw_depth
+    capture_requested      = pyqtSignal(str, str, float, float, int, float, bool, bool)
+    capture_analyze_requested = pyqtSignal(str, str, float, float, int, float, bool, bool)
     capture_stop_requested = pyqtSignal()
 
     def __init__(self):
@@ -99,6 +101,22 @@ class CapturePanel(QWidget):
         fps_row.addWidget(self.dur_spin)
         layout.addLayout(fps_row)
 
+        filter_row = QHBoxLayout()
+        self.depth_filter_check = QCheckBox('Filter depth')
+        self.depth_filter_check.setChecked(True)
+        self.depth_filter_check.setToolTip(
+            'Apply RealSense spatial, temporal, and hole-filling filters before saving depth.'
+        )
+        self.raw_depth_check = QCheckBox('Save raw depth')
+        self.raw_depth_check.setChecked(False)
+        self.raw_depth_check.setToolTip(
+            'Also save unfiltered depth frames under depth_raw/. This uses more disk space.'
+        )
+        filter_row.addWidget(self.depth_filter_check)
+        filter_row.addWidget(self.raw_depth_check)
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+
         # Buttons
         btn_row = QHBoxLayout()
         self.capture_btn = QPushButton('Capture')
@@ -108,6 +126,13 @@ class CapturePanel(QWidget):
         )
         self.capture_btn.clicked.connect(self._on_capture)
 
+        self.capture_analyze_btn = QPushButton('Capture + Reconstruct')
+        self.capture_analyze_btn.setStyleSheet(
+            'QPushButton { background:#2563eb; color:white; border-radius:4px; padding:6px; font-weight:bold; }'
+            'QPushButton:disabled { background:#94a3b8; }'
+        )
+        self.capture_analyze_btn.clicked.connect(self._on_capture_analyze)
+
         self.stop_btn = QPushButton('Stop')
         self.stop_btn.setEnabled(False)
         self.stop_btn.setStyleSheet(
@@ -116,6 +141,7 @@ class CapturePanel(QWidget):
         )
         self.stop_btn.clicked.connect(self.capture_stop_requested.emit)
         btn_row.addWidget(self.capture_btn)
+        btn_row.addWidget(self.capture_analyze_btn)
         btn_row.addWidget(self.stop_btn)
         layout.addLayout(btn_row)
 
@@ -145,24 +171,39 @@ class CapturePanel(QWidget):
             self.out_edit.setText(path)
 
     def _on_capture(self):
+        self._start_capture('Starting capture...')
+        self.capture_requested.emit(*self._capture_args())
+
+    def _on_capture_analyze(self):
+        self._start_capture('Starting capture + reconstruct...')
+        self.capture_analyze_requested.emit(*self._capture_args())
+
+    def _capture_args(self):
         backend_pref = self.backend_combo.currentData()
-        self.set_running(True)
-        self.progress.setValue(0)
-        self.status_lbl.setText('Starting capture...')
-        self.open_btn.setVisible(False)
-        self.capture_requested.emit(
+        return (
             backend_pref,
             self.out_edit.text(),
             self.vel_spin.value(),
             self.end_spin.value(),
             self.fps_spin.value(),
             self.dur_spin.value(),
+            self.depth_filter_check.isChecked(),
+            self.raw_depth_check.isChecked(),
         )
+
+    def _start_capture(self, message: str):
+        self.set_running(True)
+        self.progress.setValue(0)
+        self.status_lbl.setText(message)
+        self.open_btn.setVisible(False)
 
     def set_running(self, running: bool):
         self.capture_btn.setEnabled(not running)
+        self.capture_analyze_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
         self.backend_combo.setEnabled(not running)
+        self.depth_filter_check.setEnabled(not running)
+        self.raw_depth_check.setEnabled(not running)
 
     def on_progress(self, idx: int, total: int):
         if total > 0:

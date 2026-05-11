@@ -60,7 +60,7 @@ class DataPanel(QWidget):
         self.recon_mode_combo.addItem('ICP  (frame-to-frame, recommended)', userData='icp')
         self.recon_mode_combo.addItem('TSDF (known poses, requires calibration)', userData='tsdf')
         self.recon_mode_combo.addItem('Canopy (top-down plant fusion — best quality)', userData='canopy')
-        self.recon_mode_combo.setCurrentIndex(0)
+        self.recon_mode_combo.setCurrentIndex(2)
         self.recon_mode_combo.setToolTip(
             'ICP: frame-to-frame colour ICP — no gantry calibration needed.\n'
             'TSDF: kinematic poses from gantry step+axis calibration.\n'
@@ -173,17 +173,17 @@ class DataPanel(QWidget):
 
         self.canopy_stride_spin = QSpinBox()
         self.canopy_stride_spin.setRange(1, 100)
-        self.canopy_stride_spin.setValue(10)
+        self.canopy_stride_spin.setValue(1)
         self.canopy_stride_spin.setToolTip(
             'Canopy mode: evaluate every Nth frame during candidate search.\n'
-            'Higher = faster but fewer candidate frames considered.\n'
-            'For ~600-frame datasets: 10 is a good balance (60 frames sampled).'
+            '1 evaluates all frames and is the quality default.\n'
+            'Use higher values only for a quick preview.'
         )
         advanced_layout.addRow('Canopy Stride:', self.canopy_stride_spin)
 
         self.canopy_max_frames_spin = QSpinBox()
         self.canopy_max_frames_spin.setRange(3, 30)
-        self.canopy_max_frames_spin.setValue(9)
+        self.canopy_max_frames_spin.setValue(15)
         self.canopy_max_frames_spin.setToolTip(
             'Maximum frames to include in the depth fusion.\n'
             'More frames = denser fused surface but slower.\n'
@@ -205,7 +205,7 @@ class DataPanel(QWidget):
         self.canopy_sigma_spin.setRange(0.5, 12.0)
         self.canopy_sigma_spin.setDecimals(1)
         self.canopy_sigma_spin.setSingleStep(0.5)
-        self.canopy_sigma_spin.setValue(3.5)
+        self.canopy_sigma_spin.setValue(2.0)
         self.canopy_sigma_spin.setToolTip(
             'Gaussian smoothing sigma applied to the fused depth canvas.\n'
             'Lower = crisper leaf edges; higher = smoother but blurs fine detail.\n'
@@ -227,7 +227,7 @@ class DataPanel(QWidget):
         advanced_layout.addRow('Mask Sensitivity:', self.canopy_mask_combo)
 
         self.canopy_thickness_check = QCheckBox('Add leaf thickness layer')
-        self.canopy_thickness_check.setChecked(False)
+        self.canopy_thickness_check.setChecked(True)
         self.canopy_thickness_check.setToolTip(
             'Duplicate the top-surface point cloud with a small Z offset to simulate\n'
             'leaf thickness.  Greatly improves side-view appearance without extra\n'
@@ -451,8 +451,11 @@ class DataPanel(QWidget):
                 continue
             velocity_mps = session.get('velocity_mps')
             fps = session.get('fps')
+            spacing_m = session.get('actual_spacing_median_m')
             if velocity_mps:
                 self.gantry_velocity_spin.setValue(float(velocity_mps))
             if fps:
                 self.gantry_fps_spin.setValue(int(fps))
+            if spacing_m:
+                self.gantry_step_spin.setValue(float(spacing_m) * 1000.0)
             return

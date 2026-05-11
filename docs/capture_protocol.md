@@ -72,12 +72,12 @@ needed.
 ### Recommended canopy parameters (starting point)
 | Parameter | Recommended value | Notes |
 |---|---|---|
-| Canopy Stride | 10 | Sample every 10th frame |
-| Max Frames | 9–15 | Increase for sparse canopy |
-| Depth Sigma | 3.5 | Increase to 5–7 if frames are sparse/noisy |
-| Coverage Min | 1 | Increase to 2 if edge speckle is visible |
+| Canopy Stride | 1 | Score every usable frame for final quality |
+| Max Frames | 15 | Increase for sparse canopy; reduce only for previews |
+| Depth Sigma | 2.0 | Increase to 3.5–5 if frames are sparse/noisy |
+| Coverage Min | 1 | Uses valid foreground-depth votes, not RGB mask votes; increase to 2 if edge speckle is visible |
 | Mask Sensitivity | Default | Use Loose for pale/yellow-green plants |
-| Leaf Thickness | Off | Enable only when side-view is needed |
+| Leaf Thickness | On for display | Display-only; use `canopy_mesh.ply` for trait measurements |
 
 Run `sweep_canopy.py` (see below) to find the best parameters for a new plant
 species or lighting condition before committing to a single configuration.
@@ -158,10 +158,35 @@ python sweep_canopy.py --dataset data/main/<your_dataset> \
 Open `sweep_<timestamp>/sweep_report.html` in a browser.  The table is sortable
 — sort by **Points** descending to see the parameter combination that produced
 the densest reconstruction.  The preview cards show the fused RGB image, depth
-map, oblique 3D view, and coverage mask side-by-side for each run.
+map, selected-frame mosaic, depth-confidence map, oblique 3D view, coverage
+mask, and HTML viewer link side-by-side for each run.
 
 Record the winning `max_frames`, `smooth_sigma`, and `coverage` values in your
 session notes and enter them in the PhenoFusion3D UI before the final run.
+
+To check all datasets under `data/main` with the repaired defaults, run:
+
+```bash
+python batch_canopy_report.py --root data/main
+```
+
+Open `canopy_batch_<timestamp>/batch_report.html` to compare fused RGB,
+selected frames, fused depth, confidence, oblique preview, and the mesh viewer
+for every dataset.
+
+For one long scan containing several plants, reconstruct separate local canopy
+windows and a combined browsing mesh:
+
+```bash
+python reconstruct_canopy_sequence.py \
+    --input data/main/<your_multi_plant_dataset> \
+    --output data/main/<your_multi_plant_dataset>/canopy_sequence
+```
+
+This writes `plant_XX_token_<reference>/` folders plus `sequence_mesh.ply`,
+`sequence_display_mesh.ply`, and `sequence_viewer.html`.  The combined layout
+uses gantry reference-position offsets for browsing; use each per-plant folder
+for trait extraction.
 
 ---
 
@@ -170,10 +195,21 @@ session notes and enter them in the PhenoFusion3D UI before the final run.
 Enable the **Leaf Thickness** checkbox in the Canopy section of the UI (or pass
 `--leaf-thickness 0.003` to `reconstruct_canopy.py`).
 
-This duplicates the top-surface point cloud with a small downward Z offset
-(default 3 mm), creating the appearance of solid leaves when viewed from the
-side.  It does not add real geometric information but removes the "paper-thin"
-artefact that is otherwise visible in side views.
+This duplicates the top-surface mesh with a small downward Z offset (default
+3 mm) and closes boundary skirts, creating the appearance of solid leaves when
+viewed from the side.  It does not add real geometric information but removes
+the "paper-thin" artefact that is otherwise visible in side views.
+
+To avoid warped side curtains from single-view hole filling, the default display
+mesh only fills RGB-supported holes within 24 px of a real depth vote and avoids
+triangulating neighbouring pixels whose height jump exceeds 2.5 cm.  This keeps
+large unseen regions as holes instead of inventing stretched geometry.
+
+The repaired pipeline writes two mesh products:
+
+- `canopy_mesh.ply`: measurement-safe height-field mesh for trait extraction.
+- `canopy_display_mesh.ply`: display mesh with optional thin back-face/skirt
+  geometry used by `canopy_viewer.html`.
 
 Typical setting: **2–5 mm** depending on plant species.
 
