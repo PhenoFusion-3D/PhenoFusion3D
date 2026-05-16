@@ -1,0 +1,41 @@
+# Force LF line endings for files that MUST be Unix-style.
+#
+# Without this, a Windows clone with Git for Windows + core.autocrlf=true
+# will check out launch.sh / install/*.sh with CRLF, and bash on WSL or
+# the lab Linux box will refuse to run them with errors like:
+#     launch.sh: line 21: $'\r': command not found
+#     : invalid option nameet: pipefail
+# (the `\r` after `set -euo pipefail` gets glued to `pipefail` and bash
+# parses the whole line as one mangled option). Pinning eol=lf here
+# means the working tree always has LF for these files, even on Windows.
+
+# Unix shell scripts: LF everywhere.
+*.sh            text eol=lf
+*.bash          text eol=lf
+
+# Windows-only scripts: keep CRLF so PowerShell / cmd.exe parse them.
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Common binary asset types -- never apply line-ending conversion.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.bmp           binary
+*.ply           binary
+*.pcd           binary
+*.npy           binary
+*.npz           binary
+*.pth           binary
+*.pt            binary
+*.so            binary
+*.dll           binary
+*.dylib         binary
+*.exe           binary
+*.AppImage      binary
+*.tar.gz        binary
+*.tgz           binary
+*.zip           binary
