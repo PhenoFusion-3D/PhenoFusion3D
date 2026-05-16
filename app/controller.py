@@ -70,11 +70,11 @@ class Controller(QObject):
         self.gantry = GantryController()
 
     # ---------------------------------------------------------------- run
-    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool)
+    @pyqtSlot(str, str, str, int, float, int, int, float, object, bool, bool, bool, float)
     def on_run_clicked(self, rgb_dir, depth_dir, intrinsics_path, step_size,
                        gantry_step_m_per_frame, gantry_axis,
                        depth_min_mm, depth_trunc, bbox, enable_feature_init,
-                       use_tsdf=False):
+                       use_tsdf=False, mask_background=True, tsdf_voxel_m_ui=0.003):
         self.n_success   = 0
         self.n_fail      = 0
         self.all_metrics = []
@@ -112,6 +112,11 @@ class Controller(QObject):
         erode        = True  if is_icl else False
         inpaint      = True  if is_icl else False
 
+        # Strip white/grey gantry surfaces and anchor ICP on plant pixels only.
+        # Disabled for ICL-NUIM ground-truth (no gantry; using standard depth noise model).
+        bg_mask  = mask_background and not is_icl
+        p_icp    = bg_mask   # plant_icp follows mask_background for non-ICL data
+
         # ICP mode: frame-to-frame colour ICP (stakeholder approach, no pose needed).
         #   voxel_size=0.01 gives ICP correspondence radius ~20mm which is large
         #   enough to bridge 0.45 px/frame sub-pixel motion at 2.5m depth.
@@ -120,7 +125,8 @@ class Controller(QObject):
         # TSDF mode: kinematic poses from gantry step+axis; needs accurate calibration.
         use_known_poses = is_icl or use_tsdf
         gantry_step_m   = gantry_step_m_per_frame * step_size
-        tsdf_voxel_m    = 0.005   # matches D405 noise floor (~5 mm RMSE) at 2.8 m
+        # tsdf_voxel_m: use UI-supplied value when non-ICL, else fixed fine voxel for ICL.
+        tsdf_voxel_m = 0.005 if is_icl else tsdf_voxel_m_ui
 
         if use_known_poses:
             voxel_size = 0.02 if is_icl else 0.005
@@ -154,6 +160,8 @@ class Controller(QObject):
             max_rmse=DEFAULT_MAX_RMSE,
             save_path=os.path.join(os.path.dirname(rgb_dir), 'output'),
             agent_config=agent_config,
+            mask_background=bg_mask,
+            plant_icp=p_icp,
         )
         self.worker.frame_done.connect(self._on_frame)
         self.worker.finished.connect(self._on_finished)

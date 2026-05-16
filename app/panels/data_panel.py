@@ -12,8 +12,9 @@ from file_io.loader import load_gantry_config, load_session_json
 class DataPanel(QWidget):
 
     # rgb_dir, depth_dir, intrinsics, step, gantry_step_m, gantry_axis,
-    # depth_min_mm, depth_trunc_m, bbox, enable_feature_init, use_tsdf
-    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool)
+    # depth_min_mm, depth_trunc_m, bbox, enable_feature_init, use_tsdf,
+    # mask_background, tsdf_voxel_m
+    run_requested       = pyqtSignal(str, str, str, int, float, int, int, float, object, bool, bool, bool, float)
     calibrate_requested = pyqtSignal(str, str, str, float, int)
     stop_requested      = pyqtSignal()
 
@@ -143,6 +144,29 @@ class DataPanel(QWidget):
         )
         advanced_layout.addRow('ICP Recovery:', self.feature_init_check)
 
+        self.mask_background_check = QCheckBox('Strip background (recommended)')
+        self.mask_background_check.setChecked(True)
+        self.mask_background_check.setToolTip(
+            'Zero depth for low-saturation (white/grey) pixels before integration.\n'
+            'Removes gantry arm and background card from the reconstruction.\n'
+            'Should be ON for real plant captures; auto-disabled for ICL-NUIM datasets.'
+        )
+        advanced_layout.addRow('Background Mask:', self.mask_background_check)
+
+        self.tsdf_voxel_spin = QDoubleSpinBox()
+        self.tsdf_voxel_spin.setRange(0.001, 0.020)
+        self.tsdf_voxel_spin.setDecimals(3)
+        self.tsdf_voxel_spin.setSingleStep(0.001)
+        self.tsdf_voxel_spin.setValue(0.003)
+        self.tsdf_voxel_spin.setSuffix(' m')
+        self.tsdf_voxel_spin.setToolTip(
+            'TSDF voxel size in metres (TSDF mode only).\n'
+            '0.003 m = 3 mm: fine detail, higher memory/time.\n'
+            '0.005 m = 5 mm: balanced (matches D405 noise floor at 2.8 m).\n'
+            '0.010 m = 10 mm: fast preview quality.'
+        )
+        advanced_layout.addRow('TSDF Voxel:', self.tsdf_voxel_spin)
+
         self.calibrate_btn = QPushButton('Calibrate Gantry')
         self.calibrate_btn.setEnabled(False)
         self.calibrate_btn.setToolTip('Estimate gantry axis and step from RGB/depth frames.')
@@ -248,6 +272,8 @@ class DataPanel(QWidget):
         bbox          = self._bbox_from_controls()
         enable_feature_init = self.feature_init_check.isChecked()
         use_tsdf = bool(self.recon_mode_combo.currentData())
+        mask_background = self.mask_background_check.isChecked()
+        tsdf_voxel_m    = self.tsdf_voxel_spin.value()
 
         # Quick count check
         import glob
@@ -260,7 +286,8 @@ class DataPanel(QWidget):
         self.run_requested.emit(
             rgb_dir, depth_dir, intr_path, step,
             gantry_step_m, gantry_axis, depth_min_mm, depth_trunc,
-            bbox, enable_feature_init, use_tsdf
+            bbox, enable_feature_init, use_tsdf,
+            mask_background, tsdf_voxel_m,
         )
 
     def _on_calibrate(self):
