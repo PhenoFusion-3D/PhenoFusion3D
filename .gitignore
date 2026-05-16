@@ -3,6 +3,10 @@ venv/
 venv_win/
 .venv/
 .venv312/
+.venv-linux/
+.venv-wsl/
+.venv-test/
+.venv-fresh-test/
 
 # Build metadata
 *.egg-info/

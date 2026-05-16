@@ -1,41 +1,39 @@
 #!/usr/bin/env bash
-# install/install_linux.sh
-# Lab Linux installer for PhenoFusion3D (ROS + RealSense backend).
+# Robust Linux/WSL launcher for PhenoFusion3D.
 #
-# Designed to take a freshly-imaged Ubuntu 20.04 / 22.04 lab machine and
-# reach "the app launches" in one shot:
-#   1. Pick a Python >= 3.10 interpreter (apt-installs python3.10 if none).
-#   2. Create .venv-linux/ with --system-site-packages so the system rospy
-#      is importable from inside the venv.
-#   3. Install the project + Python deps in editable mode.
-#   4. Install native runtime libs (Qt xcb / xkb / EGL / GL) detected by
-#      ldd'ing the Qt platform plugin, so the first GUI launch does not
-#      die with "Could not load the Qt platform plugin xcb".
-#   5. Import each dependency to confirm the install is working.
+# Designed so a freshly-imaged lab Linux machine can `git clone` + `bash
+# launch.sh` and reach the GUI in one shot. Specifically the launcher:
+#   - Picks a Python >= 3.10 interpreter, trying common names in order
+#     and apt-installing python3.10 if no usable interpreter is found.
+#   - Creates / refreshes a dedicated Linux venv (default: .venv-linux)
+#     with --system-site-packages so the ROS-installed rospy is visible.
+#   - Installs the project + Python deps in editable mode.
+#   - Detects missing native runtime libs by ldd'ing the Qt xcb platform
+#     plugin (the usual culprit for "Could not load the Qt platform
+#     plugin xcb" crashes on a fresh box) and apt-installs them in a
+#     single sudo call.
+#   - Pins QT_PLUGIN_PATH to PyQt's plugins so cv2's bundled Qt plugins
+#     do not get loaded instead.
+#   - Launches main.py and forwards CLI args.
 #
-# Prereqs (system, ROS-specific): ROS Noetic / Humble installed and
-# sourced (`source /opt/ros/<distro>/setup.bash`), librealsense2 SDK
-# runtime. ROS itself is out of scope for this installer because it
-# touches global system state; install it per lab SOP first.
-#
-# Usage:
-#   chmod +x install/install_linux.sh
-#   ./install/install_linux.sh
+# The Windows venv (venv/Scripts) is never touched; the Linux venv lives
+# in .venv-linux/.
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-ROOT_DIR="$(pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
 
-log() { printf '[install] %s\n' "$*"; }
-warn() { printf '[install] WARNING: %s\n' "$*" >&2; }
-err() { printf '[install] ERROR: %s\n' "$*" >&2; }
+log() { printf '[launch] %s\n' "$*"; }
+warn() { printf '[launch] WARNING: %s\n' "$*" >&2; }
+err() { printf '[launch] ERROR: %s\n' "$*" >&2; }
 
 ###############################################################################
-# 1. Python >= 3.10 selection (apt-install python3.10 as last resort).
+# 1. Pick a Python >= 3.10 interpreter.
 ###############################################################################
 
 python_version_ok() {
+    # $1 = interpreter; returns 0 if it reports Python >= 3.10.
     local interp="$1"
     "$interp" - <<'PY' >/dev/null 2>&1
 import sys
@@ -44,6 +42,8 @@ PY
 }
 
 apt_install() {
+    # Idempotent helper: install a list of apt packages with sudo. Returns
+    # non-zero if sudo / apt is unavailable so callers can fall back.
     if [ "$#" -eq 0 ]; then
         return 0
     fi
@@ -80,7 +80,9 @@ if [ -n "$PYTHON_BIN" ]; then
     fi
 else
     if ! PYTHON_BIN="$(pick_python)"; then
-        warn "No Python >= 3.10 on PATH. Attempting apt install python3.10..."
+        warn "No Python >= 3.10 found on PATH. Attempting to install python3.10..."
+        # python3.10 is in the default Ubuntu 22.04 repos; on Ubuntu 20.04
+        # it requires the deadsnakes PPA. Try the plain package first.
         if apt_install python3.10 python3.10-venv python3.10-distutils; then
             :
         else
@@ -106,6 +108,10 @@ fi
 
 log "Using interpreter: $PYTHON_BIN ($("$PYTHON_BIN" -c 'import sys; print(sys.version.split()[0])'))"
 
+###############################################################################
+# 2. Ensure python3-venv is installable (Debian/Ubuntu split python out).
+###############################################################################
+
 if ! "$PYTHON_BIN" -c "import venv" >/dev/null 2>&1; then
     pyver="$("$PYTHON_BIN" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')"
     warn "'$PYTHON_BIN -m venv' is unavailable; installing ${pyver}-venv..."
@@ -117,18 +123,21 @@ if ! "$PYTHON_BIN" -c "import venv" >/dev/null 2>&1; then
 fi
 
 ###############################################################################
-# 2. Create the venv (always with --system-site-packages so rospy works).
+# 3. Create / refresh the Linux venv.
 ###############################################################################
 
 VENV_DIR="${PHENOFUSION_LINUX_VENV:-.venv-linux}"
 
 venv_python_ok() {
+    # Existing venv may have been built against a different (now-missing)
+    # interpreter or a stale conda env. Reject it if its python is broken
+    # or its symlink is dangling.
     [ -x "$VENV_DIR/bin/python" ] || return 1
     "$VENV_DIR/bin/python" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)" >/dev/null 2>&1
 }
 
 if [ ! -f "$VENV_DIR/.has_system_site" ] || [ ! -f "$VENV_DIR/bin/activate" ] || ! venv_python_ok; then
-    log "Creating venv at $VENV_DIR (Python $($PYTHON_BIN -c 'import sys; print(sys.version.split()[0])'), --system-site-packages)..."
+    log "Creating Linux venv at $VENV_DIR (Python $($PYTHON_BIN -c 'import sys; print(sys.version.split()[0])'), --system-site-packages)..."
     rm -rf "$VENV_DIR"
     "$PYTHON_BIN" -m venv --system-site-packages "$VENV_DIR"
     touch "$VENV_DIR/.has_system_site"
@@ -136,15 +145,55 @@ fi
 
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
-
-python -m pip install --upgrade pip
-python -m pip install -e ".[ros]"
+log "Active venv: $VIRTUAL_ENV"
 
 ###############################################################################
-# 3. Install native runtime libs needed by the Qt xcb platform plugin so
-#    that `python main.py` does not die on first launch.
+# 4. Install Python dependencies if any are missing.
 ###############################################################################
 
+REQUIRED_PY_MODULES=(PyQt5 open3d cv2 numpy natsort pyqtgraph matplotlib scipy tqdm)
+
+missing_modules() {
+    python - <<'PY'
+import importlib.util
+required = ["PyQt5", "open3d", "cv2", "numpy", "natsort", "pyqtgraph", "matplotlib", "scipy", "tqdm"]
+missing = [name for name in required if importlib.util.find_spec(name) is None]
+print(",".join(missing))
+PY
+}
+
+missing="$(missing_modules)"
+if [ -n "$missing" ]; then
+    log "Installing missing Python dependencies (${missing})..."
+    python -m pip install --upgrade pip
+    if ! python -m pip install -e ".[ros]"; then
+        # The [ros] extra is identical to [windows] today (just pyrealsense2);
+        # if it fails, retry with the windows extra so the GUI still launches.
+        warn "pip install -e '.[ros]' failed; retrying without extras..."
+        python -m pip install -e .
+    fi
+    missing="$(missing_modules)"
+    if [ -n "$missing" ]; then
+        err "Missing required packages after install: $missing"
+        exit 1
+    fi
+fi
+log "Python dependencies look good."
+
+###############################################################################
+# 5. Detect & install missing native runtime libs.
+#
+# PyQt5 wheels do NOT bundle xcb / xkb / EGL / GL client libs; those must
+# come from the host. On a freshly-imaged Ubuntu the most common failure
+# is the Qt xcb plugin aborting on libxcb-icccm.so.4 / libxcb-keysyms.so.1
+# being absent, which produces an opaque "Could not load the Qt platform
+# plugin xcb" crash. We discover the actual missing sonames by ldd'ing
+# the plugin and map them to apt package names below.
+###############################################################################
+
+# Map .so name -> Debian/Ubuntu package providing it. Keep this list aligned
+# with the actual NEEDED entries of libqxcb.so / libQt5XcbQpa.so. Packages
+# absent from a fresh Ubuntu Desktop install commonly include:
 declare -A SO_TO_PKG=(
     [libxcb-icccm.so.4]="libxcb-icccm4"
     [libxcb-keysyms.so.1]="libxcb-keysyms1"
@@ -172,6 +221,7 @@ declare -A SO_TO_PKG=(
     [libGLdispatch.so.0]="libglvnd0"
     [libfontconfig.so.1]="libfontconfig1"
     [libdbus-1.so.3]="libdbus-1-3"
+    [libxkbcommon-x11.so.0]="libxkbcommon-x11-0"
 )
 
 PLUGIN_DIRS=()
@@ -215,31 +265,33 @@ if [ "${#needs_pkgs[@]}" -gt 0 ]; then
 fi
 
 ###############################################################################
-# 4. Verify imports.
+# 6. Force Qt to load PyQt's platform plugins (not cv2's bundled plugins).
 ###############################################################################
 
-log "Verifying imports..."
+PYQT_PLUGINS_DIR="$(
 python - <<'PY'
-import importlib, sys
-ok = True
-for mod in ("PyQt5", "open3d", "cv2", "numpy", "natsort"):
-    try:
-        importlib.import_module(mod); print(f"  OK  {mod}")
-    except Exception as e:
-        ok = False; print(f"  FAIL {mod}: {e}")
-
-# rospy (system) and pyrealsense2 (pip) -- not fatal if missing on dev boxes.
-for mod in ("rospy", "pyrealsense2"):
-    try:
-        importlib.import_module(mod); print(f"  OK  {mod}")
-    except Exception as e:
-        print(f"  WARN {mod}: {e} (capture backend may not work)")
-
-sys.exit(0 if ok else 1)
+import os
+from PyQt5.QtCore import QLibraryInfo
+plugins = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+print(plugins if os.path.isdir(plugins) else "")
 PY
+)"
+if [ -n "$PYQT_PLUGINS_DIR" ]; then
+    export QT_PLUGIN_PATH="$PYQT_PLUGINS_DIR"
+    export QT_QPA_PLATFORM_PLUGIN_PATH="$PYQT_PLUGINS_DIR/platforms"
+fi
 
-echo
-log "Done. Launch the app with:"
-echo "    bash launch.sh"
-echo "  (or)"
-echo "    source $VENV_DIR/bin/activate && python main.py"
+# Let callers override (e.g. QT_QPA_PLATFORM=wayland bash launch.sh).
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+
+# Matplotlib config dir under $HOME may be unwritable in sandboxed setups
+# (the workspace is shared on the lab box). Park it in /tmp if needed so
+# the GUI does not spam warnings on every launch.
+if [ -z "${MPLCONFIGDIR:-}" ]; then
+    if ! mkdir -p "$HOME/.config/matplotlib" >/dev/null 2>&1; then
+        export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-$USER"
+        mkdir -p "$MPLCONFIGDIR"
+    fi
+fi
+
+exec python main.py "$@"

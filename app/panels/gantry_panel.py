@@ -93,12 +93,28 @@ class GantryPanel(QWidget):
 
         vel_row = QHBoxLayout()
         vel_row.addWidget(QLabel('Velocity (m/s):'))
+        self.vel_dec_btn = QPushButton('-')
+        self.vel_dec_btn.setFixedWidth(28)
+        self.vel_dec_btn.setToolTip('Decrease movement speed (hold to repeat).')
+        self.vel_dec_btn.setAutoRepeat(True)
+        self.vel_dec_btn.setAutoRepeatDelay(250)
+        self.vel_dec_btn.setAutoRepeatInterval(60)
+        self.vel_dec_btn.clicked.connect(lambda: self._adjust_velocity(-1))
+        vel_row.addWidget(self.vel_dec_btn)
         self.vel_spin = QDoubleSpinBox()
         self.vel_spin.setRange(0.001, 0.2)
         self.vel_spin.setSingleStep(0.005)
         self.vel_spin.setDecimals(3)
-        self.vel_spin.setValue(0.038)
+        self.vel_spin.setValue(0.003)
         vel_row.addWidget(self.vel_spin)
+        self.vel_inc_btn = QPushButton('+')
+        self.vel_inc_btn.setFixedWidth(28)
+        self.vel_inc_btn.setToolTip('Increase movement speed (hold to repeat).')
+        self.vel_inc_btn.setAutoRepeat(True)
+        self.vel_inc_btn.setAutoRepeatDelay(250)
+        self.vel_inc_btn.setAutoRepeatInterval(60)
+        self.vel_inc_btn.clicked.connect(lambda: self._adjust_velocity(+1))
+        vel_row.addWidget(self.vel_inc_btn)
         vel_row.addStretch()
         layout.addLayout(vel_row)
 
@@ -111,10 +127,15 @@ class GantryPanel(QWidget):
         goto_row = QHBoxLayout()
         goto_row.addWidget(QLabel('Go to (m):'))
         self.goto_spin = QDoubleSpinBox()
-        self.goto_spin.setRange(0.0, 5.0)
+        # Hard cap at 1.75 m: the camera reaches the rail edge at this
+        # distance. Anything beyond would crash the gantry into the stop.
+        self.goto_spin.setRange(0.0, 1.75)
         self.goto_spin.setSingleStep(0.05)
         self.goto_spin.setDecimals(3)
         self.goto_spin.setValue(0.0)
+        self.goto_spin.setToolTip(
+            'Absolute gantry target position. Capped at 1.75 m (rail edge).'
+        )
         goto_row.addWidget(self.goto_spin)
         self.goto_btn = QPushButton('Go')
         self.goto_btn.setFixedWidth(50)
@@ -160,9 +181,14 @@ class GantryPanel(QWidget):
         # the button while holding.
         self.stop_requested.emit()
 
+    def _adjust_velocity(self, direction: int) -> None:
+        step = self.vel_spin.singleStep() * direction
+        self.vel_spin.setValue(self.vel_spin.value() + step)
+
     def _apply_availability(self, available: bool) -> None:
         widgets = [
             self.jog_back_btn, self.jog_fwd_btn, self.vel_spin,
+            self.vel_dec_btn, self.vel_inc_btn,
             self.goto_spin, self.goto_btn, self.home_btn, self.stop_btn,
         ]
         for w in widgets:

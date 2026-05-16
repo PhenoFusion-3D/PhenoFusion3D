@@ -33,8 +33,9 @@ class CaptureParams:
     fps: int = 30
 
     # ROS / gantry only -- ignored by realsense backend
-    velocity_mps: float = 0.038        # gantry linear X velocity (m/s)
+    velocity_mps: float = 0.003        # gantry linear X velocity (m/s)
     end_position_m: float = 0.78       # stop when current_position >= this
+                                        # (hard cap in UI: 1.75 m -- rail edge)
     gantry_axis: int = 0               # 0=X, 1=Y in camera frame
 
     # RealSense-only mode: capture for N seconds (-1 = manual stop)

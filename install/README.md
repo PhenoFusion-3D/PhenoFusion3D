@@ -65,10 +65,24 @@ chmod +x install/install_linux.sh
 ```
 
 The script:
-- creates `venv/` with `--system-site-packages` so it can see the
+- picks a Python >= 3.10 interpreter (prefers `python3.12`, then `3.11`,
+  then `3.10`, then `python3`); if none is available it apt-installs
+  `python3.10` (using the `deadsnakes` PPA as a fallback on Ubuntu 20.04),
+- creates `.venv-linux/` with `--system-site-packages` so it can see the
   ROS-installed `rospy`,
 - installs the package in editable mode with `pip install -e ".[ros]"`,
+- detects missing native runtime libs by `ldd`-ing the Qt xcb platform
+  plugin and apt-installs them in a single sudo call (the most common
+  fresh-Ubuntu offenders are `libxcb-icccm4`, `libxcb-keysyms1`,
+  `libxcb-cursor0`, `libxkbcommon-x11-0`, `libegl1`, `libgl1`),
 - imports each dependency to confirm the install is working.
+
+The same Python-picking and native-lib install logic is duplicated in
+`launch.sh`, so on a fresh lab machine **just `bash launch.sh` is
+enough** -- it will create the venv, install Python deps, install
+missing system libs, and open the GUI in one shot. `install_linux.sh`
+exists primarily as the "ROS-first" path that sysadmins prefer to run
+once before any user touches the box.
 
 ### Windows
 
@@ -88,13 +102,18 @@ The script:
 
 ```bash
 # Linux
-source venv/bin/activate
-python main.py
+bash launch.sh
+
+# (manual alternative)
+# source .venv-linux/bin/activate
+# python main.py
 
 # Windows
 .\venv\Scripts\Activate.ps1
 python main.py
 ```
+
+`launch.sh` is the recommended Linux/WSL path for day-to-day usage. It uses a dedicated Linux environment (`.venv-linux`), installs missing Python packages, and applies a PyQt plugin-path fix to avoid common Qt `xcb` startup failures.
 
 ## Smoke test the camera
 
@@ -214,7 +233,17 @@ the above.
     `./install/build_appimage.sh` to recreate it cleanly.
 - **AppImage launches but crashes with `qt.qpa.plugin: Could not load
   the Qt platform plugin "xcb"`**
-  - The host is missing X11 client libs. Install them with
-    `sudo apt install libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0`
-    (Ubuntu / Debian). This is a host requirement, not a build bug --
-    PyQt5 wheels assume xcb is present.
+  - The host is missing X11 client libs. The dev install path
+    (`bash launch.sh` / `./install/install_linux.sh`) auto-detects and
+    apt-installs them; for the AppImage you need to install them
+    manually on the host. The full set commonly required on a fresh
+    Ubuntu is:
+    ```bash
+    sudo apt install libxcb-icccm4 libxcb-keysyms1 libxcb-image0 \
+        libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-shm0 \
+        libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+        libxcb-randr0 libxcb-cursor0 libxkbcommon0 libxkbcommon-x11-0 \
+        libegl1 libgl1
+    ```
+    This is a host requirement, not a build bug -- PyQt5 wheels assume
+    xcb is present.

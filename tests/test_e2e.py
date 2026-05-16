@@ -5,16 +5,25 @@ import json
 
 import cv2
 import numpy as np
+import pytest
 
 from processing.canopy import CanopyReconstructionConfig, reconstruct_canopy
 from processing.reconstructor import ReconstructionConfig, reconstruct_sequence
 
 
 class ReconstructionE2ETest(unittest.TestCase):
+    # The two `test_reconstructs_*` cases below depend on a multi-GB
+    # `test_plant_rs13_1/` dataset that is intentionally not committed to
+    # git. Tag them as `slow` so the default `pytest` invocation skips
+    # them on a fresh checkout / lab machine (see pyproject.toml ->
+    # `addopts = "-m 'not slow'"`). Run them explicitly with `pytest -m
+    # slow` once the dataset is dropped into the repo root.
+    @pytest.mark.slow
     def test_reconstructs_subset_of_bundled_dataset(self):
         repo_root = Path(__file__).resolve().parents[1]
         dataset = repo_root / "test_plant_rs13_1"
-        self.assertTrue(dataset.exists(), "Bundled dataset is required for the smoke test.")
+        if not dataset.exists():
+            self.skipTest("Bundled dataset 'test_plant_rs13_1/' not present.")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "reconstruction_local"
@@ -33,10 +42,12 @@ class ReconstructionE2ETest(unittest.TestCase):
             self.assertGreater(result.frames_registered, 0)
             self.assertGreater(result.final_point_count, 0)
 
+    @pytest.mark.slow
     def test_reconstructs_mask_guided_canopy(self):
         repo_root = Path(__file__).resolve().parents[1]
         dataset = repo_root / "test_plant_rs13_1"
-        self.assertTrue(dataset.exists(), "Bundled dataset is required for the smoke test.")
+        if not dataset.exists():
+            self.skipTest("Bundled dataset 'test_plant_rs13_1/' not present.")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "canopy_local"

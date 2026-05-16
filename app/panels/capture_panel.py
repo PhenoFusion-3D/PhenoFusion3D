@@ -69,18 +69,40 @@ class CapturePanel(QWidget):
         # Velocity / end position (ROS only)
         vel_row = QHBoxLayout()
         vel_row.addWidget(QLabel('Velocity (m/s):'))
+        self.vel_dec_btn = QPushButton('-')
+        self.vel_dec_btn.setFixedWidth(28)
+        self.vel_dec_btn.setToolTip('Decrease camera movement speed (hold to repeat).')
+        self.vel_dec_btn.setAutoRepeat(True)
+        self.vel_dec_btn.setAutoRepeatDelay(250)
+        self.vel_dec_btn.setAutoRepeatInterval(60)
+        self.vel_dec_btn.clicked.connect(lambda: self._adjust_velocity(-1))
+        vel_row.addWidget(self.vel_dec_btn)
         self.vel_spin = QDoubleSpinBox()
         self.vel_spin.setRange(0.001, 1.0)
         self.vel_spin.setSingleStep(0.005)
         self.vel_spin.setDecimals(3)
-        self.vel_spin.setValue(0.038)
+        self.vel_spin.setValue(0.003)
         vel_row.addWidget(self.vel_spin)
+        self.vel_inc_btn = QPushButton('+')
+        self.vel_inc_btn.setFixedWidth(28)
+        self.vel_inc_btn.setToolTip('Increase camera movement speed (hold to repeat).')
+        self.vel_inc_btn.setAutoRepeat(True)
+        self.vel_inc_btn.setAutoRepeatDelay(250)
+        self.vel_inc_btn.setAutoRepeatInterval(60)
+        self.vel_inc_btn.clicked.connect(lambda: self._adjust_velocity(+1))
+        vel_row.addWidget(self.vel_inc_btn)
         vel_row.addWidget(QLabel('End (m):'))
         self.end_spin = QDoubleSpinBox()
-        self.end_spin.setRange(0.05, 5.0)
+        # Hard cap at 1.75 m: the camera reaches the rail edge at this
+        # distance. Anything beyond would crash the gantry into the stop.
+        self.end_spin.setRange(0.05, 1.75)
         self.end_spin.setSingleStep(0.05)
         self.end_spin.setDecimals(2)
         self.end_spin.setValue(0.78)
+        self.end_spin.setToolTip(
+            'Gantry stops when current_position >= this. Capped at 1.75 m '
+            '(the camera reaches the rail edge at 1.75 m).'
+        )
         vel_row.addWidget(self.end_spin)
         layout.addLayout(vel_row)
 
@@ -173,6 +195,10 @@ class CapturePanel(QWidget):
             self.fps_spin.value(),
             self.dur_spin.value(),
         )
+
+    def _adjust_velocity(self, direction: int):
+        step = self.vel_spin.singleStep() * direction
+        self.vel_spin.setValue(self.vel_spin.value() + step)
 
     def set_running(self, running: bool):
         self.capture_btn.setEnabled(not running)

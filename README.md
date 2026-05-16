@@ -14,12 +14,32 @@ For lab and dev installs (preferred), use the bundled installers — see [instal
 - **Lab Linux + ROS:** `./install/install_linux.sh`
 - **Windows (camera-only):** `.\install\install_windows.ps1`
 
+For Linux/WSL launches, prefer the self-healing launcher:
+
+- **Linux/WSL:** `bash launch.sh`
+
+`launch.sh` is intentionally designed so a freshly-imaged lab box can
+clone the repo and reach the GUI in one shot. On first run it:
+- picks a Python >= 3.10 interpreter (prefers `python3.12`/`3.11`/`3.10`,
+  apt-installs `python3.10` from the deadsnakes PPA if none is available),
+- creates `.venv-linux/` with `--system-site-packages` so the
+  ROS-installed `rospy` is importable from inside the venv,
+- `pip install`s the project + Python deps (`pip install -e ".[ros]"`),
+- `ldd`s the Qt xcb platform plugin to discover any missing native
+  runtime libs (`libxcb-icccm4`, `libxcb-keysyms1`, etc.) and
+  apt-installs them in a single `sudo` call -- avoids the opaque
+  "Could not load the Qt platform plugin xcb" abort on first launch.
+
+Set `PHENOFUSION_PYTHON=/path/to/python3.11` to force a specific
+interpreter, or `PHENOFUSION_LINUX_VENV=.venv-other` to use a different
+venv directory.
+
 For a manual install (any OS), from the repository root:
 
 ```bash
 python -m venv venv
 # Windows: .\venv\Scripts\Activate.ps1
-# Linux:    source venv/bin/activate
+# Linux:    source .venv-linux/bin/activate
 pip install -e ".[windows]"   # or ".[ros]" on the lab Linux machine
 ```
 
@@ -28,6 +48,8 @@ Launch the app:
 ```bash
 python main.py
 ```
+
+On Linux/WSL, `bash launch.sh` is the recommended entry point. It uses a dedicated Linux env (`.venv-linux`) so it will not conflict with Windows `venv/`, installs missing dependencies, and applies a PyQt plugin-path fix (avoids `cv2` Qt plugin conflicts such as the `xcb` crash).
 
 With arguments, `main.py` runs batch reconstruction instead of opening the GUI (`python main.py --help`). The notebook-oriented canopy and local-merge logic is also documented in `docs/canopy_reconstruction_notes.md` (English) and `docs/canopy_reconstruction_notes_zh.md` (Chinese).
 

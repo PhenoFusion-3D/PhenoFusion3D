@@ -87,7 +87,7 @@ class DataPanel(QWidget):
         self.gantry_velocity_spin.setRange(0.001, 2.0)
         self.gantry_velocity_spin.setDecimals(3)
         self.gantry_velocity_spin.setSingleStep(0.005)
-        self.gantry_velocity_spin.setValue(0.038)
+        self.gantry_velocity_spin.setValue(0.003)
         self.gantry_velocity_spin.setSuffix(' m/s')
         self.gantry_velocity_spin.setToolTip(
             'Capture gantry velocity. Used to compute step = velocity / fps.'
