@@ -15,7 +15,14 @@ license = { text = "MIT" }
 
 dependencies = [
     "open3d>=0.17.0",
-    "opencv-python>=4.8.0",
+    # Headless OpenCV: identical API, but no bundled Qt plugins. We use
+    # PyQt5 for the GUI, and the regular `opencv-python` wheel ships its
+    # own Qt platform plugins under cv2/qt/plugins/ and hijacks
+    # QT_QPA_PLATFORM_PLUGIN_PATH at import time, which crashes PyQt's
+    # xcb plugin with "Could not load the Qt platform plugin xcb" on
+    # Linux/WSL. The -headless wheel removes only cv2.imshow /
+    # cv2.namedWindow / cv2.waitKey -- none of which this project uses.
+    "opencv-python-headless>=4.8.0",
     "numpy>=1.26.0",
     "natsort>=8.4.0",
     "tqdm>=4.66.0",

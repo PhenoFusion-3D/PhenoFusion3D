@@ -8,7 +8,13 @@
 
 # --- Core: GUI, reconstruction, quality pipeline ---
 open3d>=0.17.0
-opencv-python>=4.8.0
+# Headless OpenCV: identical API but ships no Qt plugins. The regular
+# `opencv-python` wheel bundles its own Qt platform plugins under
+# cv2/qt/plugins/ and clobbers QT_QPA_PLATFORM_PLUGIN_PATH at import
+# time, which makes PyQt5's xcb plugin fail to load on Linux/WSL.
+# This project uses PyQt5 for the GUI and never calls cv2.imshow,
+# cv2.namedWindow, or cv2.waitKey, so the -headless wheel is safe.
+opencv-python-headless>=4.8.0
 numpy>=1.26.0
 natsort>=8.4.0
 tqdm>=4.66.0

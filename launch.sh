@@ -181,6 +181,35 @@ fi
 log "Python dependencies look good."
 
 ###############################################################################
+# 4b. Self-heal a broken opencv-python install.
+#
+# pyproject.toml now requires opencv-python-headless, but a venv built
+# against an earlier version of the project (or any environment where a
+# user did `pip install opencv-python` by hand) ships its OWN Qt plugins
+# under cv2/qt/plugins/ and silently overwrites QT_QPA_PLATFORM_PLUGIN_PATH
+# from inside `import cv2`. That makes the GUI abort with:
+#     qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in
+#         "/.../site-packages/cv2/qt/plugins"
+# Detect that situation and swap in the -headless wheel before launching.
+###############################################################################
+
+if python - <<'PY' 2>/dev/null
+import importlib.util, os, sys
+spec = importlib.util.find_spec("cv2")
+if spec is None or spec.submodule_search_locations is None:
+    sys.exit(1)
+for loc in spec.submodule_search_locations:
+    if os.path.isdir(os.path.join(loc, "qt", "plugins")):
+        sys.exit(0)
+sys.exit(1)
+PY
+then
+    log "Replacing opencv-python (bundles Qt plugins) with opencv-python-headless..."
+    python -m pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true
+    python -m pip install --upgrade "opencv-python-headless>=4.8.0"
+fi
+
+###############################################################################
 # 5. Detect & install missing native runtime libs.
 #
 # PyQt5 wheels do NOT bundle xcb / xkb / EGL / GL client libs; those must
