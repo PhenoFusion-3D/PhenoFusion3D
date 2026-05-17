@@ -33,11 +33,15 @@ err() { printf '[launch] ERROR: %s\n' "$*" >&2; }
 ###############################################################################
 
 python_version_ok() {
-    # $1 = interpreter; returns 0 if it reports Python >= 3.10.
+    # $1 = interpreter; returns 0 if it reports Python 3.10 <= ver <= 3.12.
+    # 3.13+ is excluded because Open3D / pyrealsense2 wheels don't exist
+    # for it yet; picking a 3.13 interpreter would cause `pip install -e .`
+    # to fail with "no matching distribution found for open3d".
     local interp="$1"
     "$interp" - <<'PY' >/dev/null 2>&1
 import sys
-sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)
+ver = sys.version_info[:2]
+sys.exit(0 if (3, 10) <= ver <= (3, 12) else 1)
 PY
 }
 
@@ -62,45 +66,146 @@ apt_install() {
 }
 
 pick_python() {
+    # Order of preference:
+    #   1. An existing valid venv's python (so we don't reinstall on a
+    #      machine where someone already provisioned the interpreter).
+    #   2. python3.12 / 3.11 / 3.10 / python3 on PATH.
+    #   3. uv-installed Pythons (from a previous fallback run).
+    #   4. Miniforge-managed Pythons under $HOME.
+    local venv_default="${PHENOFUSION_LINUX_VENV:-.venv-linux}"
+    if [ -x "$venv_default/bin/python" ] && python_version_ok "$venv_default/bin/python"; then
+        echo "$venv_default/bin/python"
+        return 0
+    fi
     local candidates=(python3.12 python3.11 python3.10 python3)
+    local extra_dirs=(
+        "$HOME/.local/share/uv/python"
+        "$HOME/.cache/uv/python"
+        "$HOME/.miniforge3/bin"
+        "$HOME/miniforge3/bin"
+    )
     for cand in "${candidates[@]}"; do
         if command -v "$cand" >/dev/null 2>&1 && python_version_ok "$cand"; then
             echo "$cand"
             return 0
         fi
     done
+    if command -v uv >/dev/null 2>&1; then
+        local uv_py
+        uv_py="$(uv python find '>=3.10' 2>/dev/null || true)"
+        if [ -n "$uv_py" ] && [ -x "$uv_py" ] && python_version_ok "$uv_py"; then
+            echo "$uv_py"
+            return 0
+        fi
+    fi
+    for dir in "${extra_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        for cand in "$dir"/cpython-*/bin/python3 "$dir"/python3.1[0-9] "$dir"/python3; do
+            if [ -x "$cand" ] && python_version_ok "$cand"; then
+                echo "$cand"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+apt_python_install_attempt() {
+    # Try a single apt-install of python$1, python$1-venv, python$1-distutils.
+    # Returns 0 if any usable Python >= 3.10 ends up on PATH afterwards.
+    local ver="$1"
+    apt_install "python${ver}" "python${ver}-venv" "python${ver}-distutils" 2>/dev/null || true
+    command -v "python${ver}" >/dev/null 2>&1 && python_version_ok "python${ver}"
+}
+
+install_uv() {
+    # Install Astral's uv (single static binary; no sudo, no python needed).
+    # Idempotent: returns 0 if uv is already on PATH.
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+    log "Installing 'uv' (standalone Python downloader; no apt/sudo required)..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+    else
+        warn "Need curl or wget to install uv; please install one (e.g. 'sudo apt install curl')."
+        return 1
+    fi
+    # The installer drops uv into $HOME/.local/bin or $HOME/.cargo/bin.
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    command -v uv >/dev/null 2>&1
+}
+
+install_python_via_uv() {
+    # Last-resort Python installer that bypasses apt entirely. Asks uv to
+    # download CPython 3.11 (chosen for broad wheel availability) into a
+    # user-local cache and returns the path to the interpreter.
+    install_uv || return 1
+    log "Downloading CPython 3.11 via uv (this stays under $HOME, no sudo)..."
+    uv python install 3.11 2>&1 | tail -3 || return 1
+    local uv_py
+    uv_py="$(uv python find 3.11 2>/dev/null || true)"
+    if [ -n "$uv_py" ] && [ -x "$uv_py" ] && python_version_ok "$uv_py"; then
+        echo "$uv_py"
+        return 0
+    fi
     return 1
 }
 
 PYTHON_BIN="${PHENOFUSION_PYTHON:-}"
 if [ -n "$PYTHON_BIN" ]; then
     if ! python_version_ok "$PYTHON_BIN"; then
-        err "PHENOFUSION_PYTHON=$PYTHON_BIN is not Python >= 3.10."
+        err "PHENOFUSION_PYTHON=$PYTHON_BIN must be Python 3.10, 3.11, or 3.12."
         exit 1
     fi
 else
     if ! PYTHON_BIN="$(pick_python)"; then
-        warn "No Python >= 3.10 found on PATH. Attempting to install python3.10..."
-        # python3.10 is in the default Ubuntu 22.04 repos; on Ubuntu 20.04
-        # it requires the deadsnakes PPA. Try the plain package first.
-        if apt_install python3.10 python3.10-venv python3.10-distutils; then
-            :
-        else
-            if command -v apt-get >/dev/null 2>&1; then
-                warn "Adding deadsnakes PPA for python3.10 (Ubuntu 20.04 fallback)..."
-                apt_install software-properties-common || true
-                if command -v sudo >/dev/null 2>&1; then
-                    sudo add-apt-repository -y ppa:deadsnakes/ppa || true
-                else
-                    add-apt-repository -y ppa:deadsnakes/ppa || true
+        warn "No Python >= 3.10 found on PATH. Trying apt first..."
+        # Try the easy path: distro-packaged python3.10 (works out of the
+        # box on Ubuntu 22.04+; needs the deadsnakes PPA on Ubuntu 20.04).
+        # If 3.10 isn't available, fall through to 3.11, then 3.12.
+        installed_via_apt=false
+        for ver in 3.10 3.11 3.12; do
+            if apt_python_install_attempt "$ver"; then
+                installed_via_apt=true
+                break
+            fi
+        done
+        if [ "$installed_via_apt" != true ] && command -v apt-get >/dev/null 2>&1; then
+            warn "Plain apt could not provide Python >= 3.10; adding deadsnakes PPA..."
+            apt_install software-properties-common || true
+            if command -v sudo >/dev/null 2>&1; then
+                sudo add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+                sudo apt-get update -y >/dev/null 2>&1 || true
+            else
+                add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+                apt-get update -y >/dev/null 2>&1 || true
+            fi
+            for ver in 3.10 3.11 3.12; do
+                if apt_python_install_attempt "$ver"; then
+                    installed_via_apt=true
+                    break
                 fi
-                apt_install python3.10 python3.10-venv python3.10-distutils || true
+            done
+        fi
+        # Final fallback: install uv and use it to download CPython into
+        # the user's home directory. This works even when apt is broken,
+        # the deadsnakes PPA has stale signing keys, or there's no sudo.
+        if ! PYTHON_BIN="$(pick_python)"; then
+            warn "apt path failed. Falling back to uv (no apt, no sudo needed)..."
+            if uv_py="$(install_python_via_uv)"; then
+                PYTHON_BIN="$uv_py"
             fi
         fi
-        if ! PYTHON_BIN="$(pick_python)"; then
-            err "No Python >= 3.10 interpreter could be found or installed."
-            err "Install one manually (e.g. 'sudo apt install python3.10 python3.10-venv')"
-            err "or set PHENOFUSION_PYTHON=/path/to/python3.10 and re-run."
+        if [ -z "${PYTHON_BIN:-}" ] || ! python_version_ok "$PYTHON_BIN"; then
+            err "Could not find or install a Python >= 3.10 interpreter."
+            err "Tried: existing PATH, apt python3.{10,11,12} (with deadsnakes PPA), uv."
+            err "Install one manually and set PHENOFUSION_PYTHON=/path/to/python3.x"
+            err "Examples:"
+            err "  curl -LsSf https://astral.sh/uv/install.sh | sh && uv python install 3.11"
+            err "  sudo apt install python3.10 python3.10-venv python3.10-distutils"
             exit 1
         fi
     fi
