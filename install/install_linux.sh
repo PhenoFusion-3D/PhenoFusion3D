@@ -270,6 +270,10 @@ declare -A SO_TO_PKG=(
     [libusb-1.0.so.0]="libusb-1.0-0"
     [libpng16.so.16]="libpng16-16"
     [libz.so.1]="zlib1g"
+    [libgthread-2.0.so.0]="libglib2.0-0"
+    [libglib-2.0.so.0]="libglib2.0-0"
+    [libgobject-2.0.so.0]="libglib2.0-0"
+    [libgio-2.0.so.0]="libglib2.0-0"
 )
 
 PLUGIN_DIRS=()
@@ -282,6 +286,9 @@ for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
     for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
         [ -f "$sofile" ] && SCAN_SOFILES+=("$sofile")
     done
+done
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/PyQt5/Qt5/lib/"libQt5*.so.5; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
 done
 for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/open3d/cpu/"pybind*.so; do
     [ -f "$cand" ] && SCAN_SOFILES+=("$cand")

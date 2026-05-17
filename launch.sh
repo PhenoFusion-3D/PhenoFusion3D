@@ -376,6 +376,11 @@ declare -A SO_TO_PKG=(
     [libusb-1.0.so.0]="libusb-1.0-0"
     [libpng16.so.16]="libpng16-16"
     [libz.so.1]="zlib1g"
+    # libQt5Core links these; libglib2.0-0 provides libgthread/libglib/libgobject.
+    [libgthread-2.0.so.0]="libglib2.0-0"
+    [libglib-2.0.so.0]="libglib2.0-0"
+    [libgobject-2.0.so.0]="libglib2.0-0"
+    [libgio-2.0.so.0]="libglib2.0-0"
 )
 
 PLUGIN_DIRS=()
@@ -383,14 +388,22 @@ for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/PyQt5/Qt5/plugins/platform
     [ -d "$cand" ] && PLUGIN_DIRS+=("$cand")
 done
 
-# Native libs we want to scan with ldd. Start with the Qt xcb plugin
-# (most common failure on a fresh box) and add Open3D / pyrealsense2's
-# C extensions so libgomp / libusb / etc. get auto-installed too.
+# Native libs we want to scan with ldd. We deliberately cast a wide net
+# here -- it costs nothing to ldd a few extra .so files, and missing any
+# one of them means a confusing crash on the first GUI launch.
 SCAN_SOFILES=()
+# Qt xcb platform plugin (the canonical "Could not load xcb" trigger).
 for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
     for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
         [ -f "$sofile" ] && SCAN_SOFILES+=("$sofile")
     done
+done
+# Every other PyQt5 Qt5 .so in the wheel -- libQt5Core needs libgthread,
+# libQt5Widgets needs libQt5Gui needs libfontconfig, etc. Scanning the
+# whole bundle picks up libgthread / libglib / libgobject that the xcb
+# plugin alone does not pull in.
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/PyQt5/Qt5/lib/"libQt5*.so.5; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
 done
 # Open3D's native module (cpu/pybind*.so) pulls in libgomp.
 for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/open3d/cpu/"pybind*.so; do
