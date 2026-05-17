@@ -27,7 +27,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT_DIR="$(pwd)"
 
-log() { printf '[install] %s\n' "$*"; }
+# All progress/diagnostic logging goes to stderr so that functions which
+# return data via stdout (e.g. `PYTHON_BIN="$(pick_python)"`) are not
+# polluted with log lines.
+log() { printf '[install] %s\n' "$*" >&2; }
 warn() { printf '[install] WARNING: %s\n' "$*" >&2; }
 err() { printf '[install] ERROR: %s\n' "$*" >&2; }
 
@@ -127,9 +130,13 @@ install_uv() {
 }
 
 install_python_via_uv() {
+    # All progress goes to stderr; only the interpreter path is printed
+    # on stdout for `$(install_python_via_uv)` to capture.
     install_uv || return 1
     log "Downloading CPython 3.11 via uv (this stays under $HOME, no sudo)..."
-    uv python install 3.11 2>&1 | tail -3 || return 1
+    if ! uv python install 3.11 >&2; then
+        return 1
+    fi
     local uv_py
     uv_py="$(uv python find 3.11 2>/dev/null || true)"
     if [ -n "$uv_py" ] && [ -x "$uv_py" ] && python_version_ok "$uv_py"; then

@@ -24,7 +24,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-log() { printf '[launch] %s\n' "$*"; }
+# All progress/diagnostic logging goes to stderr so that functions which
+# return data via stdout (e.g. `PYTHON_BIN="$(pick_python)"` or
+# `uv_py="$(install_python_via_uv)"`) are not polluted with log lines.
+log() { printf '[launch] %s\n' "$*" >&2; }
 warn() { printf '[launch] WARNING: %s\n' "$*" >&2; }
 err() { printf '[launch] ERROR: %s\n' "$*" >&2; }
 
@@ -141,10 +144,14 @@ install_uv() {
 install_python_via_uv() {
     # Last-resort Python installer that bypasses apt entirely. Asks uv to
     # download CPython 3.11 (chosen for broad wheel availability) into a
-    # user-local cache and returns the path to the interpreter.
+    # user-local cache and returns the path to the interpreter on stdout.
+    # NOTE: all progress output must go to stderr -- this function's stdout
+    # is captured by the caller via `$(install_python_via_uv)`.
     install_uv || return 1
     log "Downloading CPython 3.11 via uv (this stays under $HOME, no sudo)..."
-    uv python install 3.11 2>&1 | tail -3 || return 1
+    if ! uv python install 3.11 >&2; then
+        return 1
+    fi
     local uv_py
     uv_py="$(uv python find 3.11 2>/dev/null || true)"
     if [ -n "$uv_py" ] && [ -x "$uv_py" ] && python_version_ok "$uv_py"; then
