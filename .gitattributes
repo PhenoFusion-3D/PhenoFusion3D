@@ -13,6 +13,18 @@
 *.sh            text eol=lf
 *.bash          text eol=lf
 
+# YAML / TOML / JSON: LF (consumed by tools like GitHub Actions, pyproject,
+# pre-commit, etc. that prefer Unix endings).
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.toml          text eol=lf
+*.json          text eol=lf
+*.cfg           text eol=lf
+*.ini           text eol=lf
+
+# Python: LF (cross-platform safe; matches PEP 8 conventions).
+*.py            text eol=lf
+
 # Windows-only scripts: keep CRLF so PowerShell / cmd.exe parse them.
 *.ps1           text eol=crlf
 *.bat           text eol=crlf
