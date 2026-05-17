@@ -21,19 +21,25 @@ apt-get update -qq
 apt-get install -qq -y git curl sudo ca-certificates
 useradd -m -s /bin/bash labuser
 echo "labuser ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/labuser
-
-# Modern git refuses to operate on repos owned by a different user
-# ("dubious ownership"). The GitHub runner checks out as the runner
-# UID; inside the container that UID maps to nobody. Make every git
-# in the container trust the mounted /repo regardless of its owner --
-# this is container-local, doesn't leak to the host.
-git config --system --add safe.directory /repo
-sudo -u labuser git config --global --add safe.directory /repo
+echo "    ownership /repo:      $(stat -c '%u:%g %U:%G' /repo)"
+echo "    ownership /repo/.git: $(stat -c '%u:%g %U:%G' /repo/.git 2>/dev/null || echo 'no .git')"
+echo "    labuser UID/GID:      $(id labuser)"
 echo
 
-echo "================ STAGE 3: clone repo from mounted workspace ================"
-sudo -u labuser git clone -q /repo /home/labuser/PhenoFusion3D
-sudo -u labuser bash -c 'cd /home/labuser/PhenoFusion3D && git log -1 --format="    HEAD: %h %s"'
+echo "================ STAGE 3: copy repo into labuser's HOME (bypass git ownership check) ================"
+# We deliberately do NOT use 'git clone /repo' here. On a GitHub Actions
+# runner the workspace is owned by UID 1001; inside this container
+# labuser is UID 1000, and modern git refuses to operate on a repo whose
+# .git is owned by a different UID ("fatal: detected dubious ownership").
+# `safe.directory = /repo` config does not always cover the .git
+# subdirectory, and the `*` wildcard syntax is git >= 2.36 only (focal
+# ships git 2.25.1). Copying the worktree as root and then chown'ing it
+# to labuser sidesteps git's ownership check entirely -- launch.sh only
+# needs the source files, not a real git remote.
+mkdir -p /home/labuser/PhenoFusion3D
+cp -a /repo/. /home/labuser/PhenoFusion3D/
+chown -R labuser:labuser /home/labuser/PhenoFusion3D
+sudo -u labuser bash -c 'cd /home/labuser/PhenoFusion3D && git log -1 --format="    HEAD: %h %s" 2>/dev/null || echo "    (no .git history, files copied)"'
 echo
 
 echo "================ STAGE 4: launcher CLI mode (must reach main.py --help) ================"
