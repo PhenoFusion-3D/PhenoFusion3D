@@ -255,11 +255,32 @@ declare -A SO_TO_PKG=(
     [libGLdispatch.so.0]="libglvnd0"
     [libfontconfig.so.1]="libfontconfig1"
     [libdbus-1.so.3]="libdbus-1-3"
+    # Open3D's pybind*.so links OpenMP, which is not installed by default
+    # on Ubuntu Server / WSL minimal. Without it `import open3d` aborts
+    # with: OSError: libgomp.so.1: cannot open shared object file.
+    [libgomp.so.1]="libgomp1"
+    [libstdc++.so.6]="libstdc++6"
+    [libgcc_s.so.1]="libgcc-s1"
+    [libGLU.so.1]="libglu1-mesa"
+    [libusb-1.0.so.0]="libusb-1.0-0"
 )
 
 PLUGIN_DIRS=()
 for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/PyQt5/Qt5/plugins/platforms"; do
     [ -d "$cand" ] && PLUGIN_DIRS+=("$cand")
+done
+
+SCAN_SOFILES=()
+for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
+    for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
+        [ -f "$sofile" ] && SCAN_SOFILES+=("$sofile")
+    done
+done
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/open3d/cpu/"pybind*.so; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
+done
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/pyrealsense2/"pyrealsense2*.so; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
 done
 
 needs_pkgs=()
@@ -273,19 +294,17 @@ add_pkg() {
     needs_pkgs+=("$pkg")
 }
 
-for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
-    for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
-        [ -f "$sofile" ] || continue
-        while IFS= read -r soname; do
-            [ -n "$soname" ] || continue
-            pkg="${SO_TO_PKG[$soname]:-}"
-            if [ -n "$pkg" ]; then
-                add_pkg "$pkg"
-            else
-                warn "Unknown apt package for missing library: $soname"
-            fi
-        done < <(ldd "$sofile" 2>/dev/null | awk '/=> not found/ {print $1}')
-    done
+for sofile in "${SCAN_SOFILES[@]:-}"; do
+    [ -f "$sofile" ] || continue
+    while IFS= read -r soname; do
+        [ -n "$soname" ] || continue
+        pkg="${SO_TO_PKG[$soname]:-}"
+        if [ -n "$pkg" ]; then
+            add_pkg "$pkg"
+        else
+            warn "Unknown apt package for missing library: $soname"
+        fi
+    done < <(ldd "$sofile" 2>/dev/null | awk '/=> not found/ {print $1}')
 done
 
 if [ "${#needs_pkgs[@]}" -gt 0 ]; then

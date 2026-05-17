@@ -356,11 +356,39 @@ declare -A SO_TO_PKG=(
     [libfontconfig.so.1]="libfontconfig1"
     [libdbus-1.so.3]="libdbus-1-3"
     [libxkbcommon-x11.so.0]="libxkbcommon-x11-0"
+    # Open3D's pybind*.so links OpenMP, which is not installed by default
+    # on Ubuntu Server / WSL minimal. Without it `import open3d` aborts
+    # with: OSError: libgomp.so.1: cannot open shared object file.
+    [libgomp.so.1]="libgomp1"
+    # Defensive entries for other libs the Open3D / PyQt stacks pull in
+    # that occasionally go missing on stripped-down images.
+    [libstdc++.so.6]="libstdc++6"
+    [libgcc_s.so.1]="libgcc-s1"
+    [libGLU.so.1]="libglu1-mesa"
+    [libusb-1.0.so.0]="libusb-1.0-0"
 )
 
 PLUGIN_DIRS=()
 for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/PyQt5/Qt5/plugins/platforms"; do
     [ -d "$cand" ] && PLUGIN_DIRS+=("$cand")
+done
+
+# Native libs we want to scan with ldd. Start with the Qt xcb plugin
+# (most common failure on a fresh box) and add Open3D / pyrealsense2's
+# C extensions so libgomp / libusb / etc. get auto-installed too.
+SCAN_SOFILES=()
+for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
+    for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
+        [ -f "$sofile" ] && SCAN_SOFILES+=("$sofile")
+    done
+done
+# Open3D's native module (cpu/pybind*.so) pulls in libgomp.
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/open3d/cpu/"pybind*.so; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
+done
+# pyrealsense2's native module pulls in libusb on stripped-down hosts.
+for cand in "$VIRTUAL_ENV/lib/"python*"/site-packages/pyrealsense2/"pyrealsense2*.so; do
+    [ -f "$cand" ] && SCAN_SOFILES+=("$cand")
 done
 
 needs_pkgs=()
@@ -374,19 +402,17 @@ add_pkg() {
     needs_pkgs+=("$pkg")
 }
 
-for plugins_dir in "${PLUGIN_DIRS[@]:-}"; do
-    for sofile in "$plugins_dir/libqxcb.so" "$plugins_dir/../../lib/libQt5XcbQpa.so.5"; do
-        [ -f "$sofile" ] || continue
-        while IFS= read -r soname; do
-            [ -n "$soname" ] || continue
-            pkg="${SO_TO_PKG[$soname]:-}"
-            if [ -n "$pkg" ]; then
-                add_pkg "$pkg"
-            else
-                warn "Unknown apt package for missing library: $soname"
-            fi
-        done < <(ldd "$sofile" 2>/dev/null | awk '/=> not found/ {print $1}')
-    done
+for sofile in "${SCAN_SOFILES[@]:-}"; do
+    [ -f "$sofile" ] || continue
+    while IFS= read -r soname; do
+        [ -n "$soname" ] || continue
+        pkg="${SO_TO_PKG[$soname]:-}"
+        if [ -n "$pkg" ]; then
+            add_pkg "$pkg"
+        else
+            warn "Unknown apt package for missing library: $soname"
+        fi
+    done < <(ldd "$sofile" 2>/dev/null | awk '/=> not found/ {print $1}')
 done
 
 if [ "${#needs_pkgs[@]}" -gt 0 ]; then
