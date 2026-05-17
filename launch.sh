@@ -361,6 +361,7 @@ declare -A SO_TO_PKG=(
     [libGLX.so.0]="libglx0"
     [libGLdispatch.so.0]="libglvnd0"
     [libfontconfig.so.1]="libfontconfig1"
+    [libfreetype.so.6]="libfreetype6"
     [libdbus-1.so.3]="libdbus-1-3"
     [libxkbcommon-x11.so.0]="libxkbcommon-x11-0"
     # Open3D's pybind*.so links OpenMP, which is not installed by default
@@ -373,6 +374,8 @@ declare -A SO_TO_PKG=(
     [libgcc_s.so.1]="libgcc-s1"
     [libGLU.so.1]="libglu1-mesa"
     [libusb-1.0.so.0]="libusb-1.0-0"
+    [libpng16.so.16]="libpng16-16"
+    [libz.so.1]="zlib1g"
 )
 
 PLUGIN_DIRS=()
