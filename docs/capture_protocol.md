@@ -69,6 +69,85 @@ The gantry software saves:
 This flat layout is supported directly by the canopy pipeline — no reorganisation
 needed.
 
+### Multi-plant sequence reconstruction
+
+When several plants are captured in one long top-down sweep, use **Canopy
+Sequence (multi-plant top-down)** in the PyQt reconstruction mode list, or run:
+
+```bash
+python reconstruct_canopy_sequence.py \
+    --input data/main/<your_dataset> \
+    --output data/main/<your_dataset>/canopy_sequence \
+    --component-instances \
+    --stride 3 \
+    --fusion-stride 1 \
+    --max-frames 7 \
+    --smooth-sigma 0.8 \
+    --leaf-thickness 0
+```
+
+This detects separate green plant components through the scan, reconstructs each
+plant with a small high-overlap frame window, and writes both per-plant viewers
+and a combined `sequence_viewer.html`.  Keep `leaf-thickness` off for metric
+outputs; it is a display-only layer and can create side skirts on broad leaves.
+
+There is also an experimental global orthographic mode:
+
+```bash
+python reconstruct_canopy_sequence.py --input data/main/<your_dataset> --global-ortho
+```
+
+Use it as a diagnostic only.  On the current RealSense gantry data it can smear
+large leaves if the scene motion is dominated by floor/rail/background depth
+rather than the plant surface.
+
+For broad, glossy leaves or sparse scans, fewer sharper frames (`max_frames` 7–9)
+usually gives cleaner leaf boundaries than fusing many weakly overlapping
+frames.  The fused top view is the measurement-safe product; side views remain a
+top-surface approximation unless extra viewpoints are captured.
+
+### Two reconstruction products
+
+Use the **full-scene sequence** output as the first reconstruction stage when you
+want to inspect the complete visible scan volume: plant, pot, tray, rails,
+background card, and neighbouring objects.  This is the normal reconstruction
+product and should keep background masking disabled:
+
+```bash
+python reconstruct_scene_sequence.py --input data/main/<your_dataset> \
+    --output data/main/<your_dataset>/scene_sequence_pointcloud \
+    --rerun --method pointcloud --layout auto
+```
+
+This method keeps all valid depth pixels instead of applying a plant mask.  It is
+the most honest first-stage diagnostic: if the depth frames contain holes,
+far-depth sentinel values, or the gantry pose is wrong, the output will show those
+capture/pose problems rather than hiding them behind plant-only cleanup.  Use
+plant segmentation/cleanup only after this full-scene model is acceptable.
+
+The optional `--method heightfield` path is experimental.  It can make a compact
+top-down visible-surface preview, but it is not a substitute for a real
+full-scene reconstruction when the depth coverage or poses are poor.
+
+For multi-plant top-down gantry scans, prefer the instance-aware canopy sequence
+workflow.  It detects separate green components, tracks each plant through the
+scan, reconstructs each plant with canopy fusion, and writes a combined sequence
+viewer:
+
+```bash
+python reconstruct_canopy_sequence.py --input data/main/<your_dataset> \
+    --output data/main/<your_dataset>/canopy_instances \
+    --component-instances --stride 3 --max-frames 30
+```
+
+This is still a visible top-surface model.  It can support canopy traits and
+plant-by-plant browsing, but it cannot infer hidden undersides or back faces
+from a single overhead pass.
+
+Use the **Canopy** output when you want the best plant-only top-surface model for
+trait extraction.  It intentionally crops/masks the scene and should not be used
+as a replacement for the full-sequence scene viewer.
+
 ### Recommended canopy parameters (starting point)
 | Parameter | Recommended value | Notes |
 |---|---|---|

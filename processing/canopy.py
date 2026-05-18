@@ -134,6 +134,21 @@ class CanopyReconstructionConfig:
     leaf_thickness_m: float = 0.003
     """Vertical offset (metres) for the duplicated back-face layer."""
 
+    spread_reference_frames: bool = False
+    """When a reference token is supplied, sample frames across the whole track."""
+
+    display_as_canopy_sheet: bool = False
+    """Use a smoothed top-textured display sheet instead of noisy metric relief."""
+
+    display_sheet_relief_m: float = 0.025
+    """Maximum display-only height relief for canopy-sheet side views."""
+
+    display_sheet_smooth_sigma: float = 4.0
+    """Depth smoothing sigma used only for canopy-sheet display geometry."""
+
+    display_sheet_pixel_step: int = 2
+    """Sample every Nth pixel when building canopy-sheet display meshes."""
+
 
 @dataclass
 class CanopyReconstructionResult:
@@ -530,6 +545,26 @@ def _select_frames(
 
     ref = int(reference["token"])
     ref_pos = float(reference.get("position_m", ref))
+    if (
+        cfg.spread_reference_frames
+        and cfg.reference_token is not None
+        and len(ranked) > max(1, int(cfg.max_frames))
+    ):
+        ordered = sorted(ranked, key=lambda c: float(c.get("position_m", c["token"])))
+        slots = np.linspace(0, len(ordered) - 1, num=max(1, int(cfg.max_frames)))
+        selected_by_token: dict[int, dict] = {ref: reference}
+        for slot in slots:
+            item = ordered[int(round(float(slot)))]
+            selected_by_token[int(item["token"])] = item
+        # If rounding collided with the reference slot, fill from the best remaining
+        # candidates while keeping the frame set spread across the tracked instance.
+        for item in sorted(ranked, key=lambda c: -float(c.get("score", 0.0))):
+            if len(selected_by_token) >= max(1, int(cfg.max_frames)):
+                break
+            selected_by_token[int(item["token"])] = item
+        selected = sorted(selected_by_token.values(), key=lambda c: c["token"])
+        return selected, ref
+
     selected = sorted(
         ranked,
         key=lambda c: (
@@ -729,6 +764,25 @@ def _nearest_fill_in_mask(
     return canvas
 
 
+def _nearest_fill_rgb_in_mask(
+    rgb: np.ndarray,
+    valid: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Fill missing RGB pixels inside a mask from the nearest valid colour."""
+    if not np.any(valid):
+        return rgb
+    out = rgb.copy()
+    missing = mask & ~valid
+    if np.any(missing):
+        _, nearest_indices = distance_transform_edt(~valid, return_indices=True)
+        out[missing] = out[
+            nearest_indices[0][missing], nearest_indices[1][missing]
+        ]
+    out[~mask] = 0
+    return out
+
+
 def _fill_depth_inside_mask(
     depth_u16: np.ndarray,
     mask_u8: np.ndarray,
@@ -791,8 +845,8 @@ def _crop_to_mask(
     if len(ys) == 0:
         return depth, mask, rgb, K, [0, 0, depth.shape[1], depth.shape[0]]
     x1, y1 = max(0, int(xs.min()) - padding), max(0, int(ys.min()) - padding)
-    x2 = min(depth.shape[1], int(xs.max()) + padding)
-    y2 = min(depth.shape[0], int(ys.max()) + padding)
+    x2 = min(depth.shape[1], int(xs.max()) + padding + 1)
+    y2 = min(depth.shape[0], int(ys.max()) + padding + 1)
     K_out = K.copy()
     K_out[0, 2] -= x1
     K_out[1, 2] -= y1
@@ -1072,6 +1126,97 @@ def _display_mesh_with_thickness(
     return out
 
 
+def _build_canopy_sheet_display_mesh(
+    fused_depth_mm: np.ndarray,
+    fused_mask: np.ndarray,
+    fused_rgb_bgr: np.ndarray,
+    K: np.ndarray,
+    *,
+    relief_m: float,
+    smooth_sigma: float,
+    thickness_m: float,
+    pixel_step: int = 2,
+) -> o3d.geometry.TriangleMesh:
+    """Build a stable top-textured display sheet for top-down canopy outputs.
+
+    The metric mesh is still saved separately.  This display mesh deliberately
+    uses a fixed reference depth for XY and a small smoothed relief in Z so side
+    views stay readable instead of showing raw depth noise as shredded geometry.
+    """
+    valid = fused_mask & (fused_depth_mm > 0)
+    if not np.any(valid):
+        return o3d.geometry.TriangleMesh()
+
+    fx, fy = float(K[0, 0]), float(abs(K[1, 1]))
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    reference_depth_m = float(np.median(fused_depth_mm[valid]) / 1000.0)
+    depth_m = (fused_depth_mm / 1000.0).astype(np.float32)
+    baseline_depth_m = float(np.percentile(fused_depth_mm[valid], 95.0) / 1000.0)
+    relief = np.maximum(0.0, baseline_depth_m - depth_m).astype(np.float32)
+    relief[~fused_mask] = 0.0
+    if float(smooth_sigma) > 0:
+        relief = _smooth_in_mask(relief, fused_mask, sigma=float(smooth_sigma))
+        relief[~fused_mask] = 0.0
+    if np.any(fused_mask):
+        upper = float(np.percentile(relief[fused_mask], 99.0))
+        if upper > 1e-6:
+            relief = np.clip(relief / upper, 0.0, 1.0) * max(float(relief_m), 0.0)
+        else:
+            relief[:] = 0.0
+
+    rgb_img = cv2.cvtColor(fused_rgb_bgr, cv2.COLOR_BGR2RGB)
+    x0, y0, w, h = cv2.boundingRect(fused_mask.astype(np.uint8))
+    step = max(1, int(pixel_step))
+    sample_h = (h + step - 1) // step
+    sample_w = (w + step - 1) // step
+    id_map = -np.ones((sample_h, sample_w), dtype=np.int32)
+    vertices: list[list[float]] = []
+    vertex_colors: list[np.ndarray] = []
+
+    for sy, yy in enumerate(range(y0, y0 + h, step)):
+        for sx, xx in enumerate(range(x0, x0 + w, step)):
+            if not fused_mask[yy, xx]:
+                continue
+            idx = len(vertices)
+            vertices.append([
+                (xx - cx) * reference_depth_m / fx,
+                -((yy - cy) * reference_depth_m / fy),
+                float(relief[yy, xx]),
+            ])
+            vertex_colors.append(rgb_img[yy, xx].astype(np.float64) / 255.0)
+            id_map[sy, sx] = idx
+
+    triangles: list[list[int]] = []
+    for yy in range(sample_h - 1):
+        for xx in range(sample_w - 1):
+            ids = [
+                id_map[yy, xx],
+                id_map[yy, xx + 1],
+                id_map[yy + 1, xx],
+                id_map[yy + 1, xx + 1],
+            ]
+            if ids[0] >= 0 and ids[1] >= 0 and ids[2] >= 0:
+                triangles.append([ids[0], ids[2], ids[1]])
+            if ids[1] >= 0 and ids[2] >= 0 and ids[3] >= 0:
+                triangles.append([ids[1], ids[2], ids[3]])
+
+    if not vertices or not triangles:
+        return o3d.geometry.TriangleMesh()
+    points = np.asarray(vertices, dtype=np.float64)
+    points[:, 0] -= float(points[:, 0].mean())
+    points[:, 1] -= float(points[:, 1].mean())
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(points)
+    mesh.vertex_colors = o3d.utility.Vector3dVector(np.asarray(vertex_colors, dtype=np.float64))
+    mesh.triangles = o3d.utility.Vector3iVector(np.asarray(triangles, dtype=np.int32))
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_unreferenced_vertices()
+    mesh.compute_vertex_normals()
+    return _display_mesh_with_thickness(mesh, thickness_m)
+
+
 # ---------------------------------------------------------------------------
 # Oblique preview
 # ---------------------------------------------------------------------------
@@ -1343,20 +1488,38 @@ def reconstruct_canopy(
     )
     fused_depth_full[~fused_mask] = 0.0
 
-    # Colour fusion
+    # Colour fusion: prefer the frame whose raw depth agrees best with the fused
+    # top surface. Averaging many warped views smears veins and creates ghosted
+    # leaf edges when a plant spans a long gantry track.
     canvas_h, canvas_w = plant_coverage.shape
-    color_sum  = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
-    for warped_rgb, warped_mask_bool in zip(warped_rgbs, warped_masks):
-        color_sum += warped_rgb * warped_mask_bool[..., None].astype(np.float32)
+    color_sum = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
+    best_delta = np.full((canvas_h, canvas_w), np.inf, dtype=np.float32)
     fused_rgb = np.zeros_like(color_sum, dtype=np.float32)
-    np.divide(
-        color_sum, np.maximum(plant_coverage[..., None], 1),
-        out=fused_rgb, where=plant_coverage[..., None] > 0,
-    )
+    for warped_rgb, warped_mask_bool, warped_depth, warped_valid in zip(
+        warped_rgbs, warped_masks, warped_depths, warped_depth_valids
+    ):
+        color_sum += warped_rgb * warped_mask_bool[..., None].astype(np.float32)
+        color_valid = warped_mask_bool & warped_valid & fused_mask & (fused_depth_full > 0)
+        if not np.any(color_valid):
+            continue
+        delta = np.abs(warped_depth.astype(np.float32) - fused_depth_full.astype(np.float32))
+        take = color_valid & (delta < best_delta)
+        fused_rgb[take] = warped_rgb[take]
+        best_delta[take] = delta[take]
+    fallback = fused_mask & ~np.isfinite(best_delta)
+    if np.any(fallback):
+        averaged_rgb = np.zeros_like(color_sum, dtype=np.float32)
+        np.divide(
+            color_sum, np.maximum(plant_coverage[..., None], 1),
+            out=averaged_rgb, where=plant_coverage[..., None] > 0,
+        )
+        fused_rgb[fallback] = averaged_rgb[fallback]
     if reference_warped_rgb is not None and reference_warped_mask is not None:
         ref_valid = reference_warped_mask & fused_mask
         fused_rgb[ref_valid] = reference_warped_rgb[ref_valid]
     fused_rgb = np.clip(fused_rgb, 0, 255).astype(np.uint8)
+    color_valid = fused_mask & np.any(fused_rgb > 0, axis=2)
+    fused_rgb = _nearest_fill_rgb_in_mask(fused_rgb, color_valid, fused_mask)
     fused_rgb[~fused_mask] = 0
 
     # Optional crop
@@ -1414,9 +1577,21 @@ def reconstruct_canopy(
             mesh = poisson_mesh
             mesh_method = "poisson_experimental"
 
-    display_mesh = _display_mesh_with_thickness(
-        mesh, cfg.leaf_thickness_m if cfg.add_leaf_thickness else 0.0
-    )
+    if cfg.display_as_canopy_sheet:
+        display_mesh = _build_canopy_sheet_display_mesh(
+            fused_depth_full,
+            fused_mask,
+            fused_rgb,
+            K_canvas,
+            relief_m=cfg.display_sheet_relief_m,
+            smooth_sigma=cfg.display_sheet_smooth_sigma,
+            thickness_m=cfg.leaf_thickness_m if cfg.add_leaf_thickness else 0.0,
+            pixel_step=cfg.display_sheet_pixel_step,
+        )
+    else:
+        display_mesh = _display_mesh_with_thickness(
+            mesh, cfg.leaf_thickness_m if cfg.add_leaf_thickness else 0.0
+        )
 
     point_cloud_path = output_dir / "canopy_points.ply"
     mesh_path        = output_dir / "canopy_mesh.ply"
@@ -1450,6 +1625,7 @@ def reconstruct_canopy(
         "final_triangle_count": len(np.asarray(mesh.triangles)),
         "display_triangle_count": len(np.asarray(display_mesh.triangles)),
         "mesh_method": mesh_method,
+        "display_method": "canopy_sheet" if cfg.display_as_canopy_sheet else "metric_mesh",
         "depth_coverage_max": int(depth_coverage.max()),
         "depth_coverage_mean_on_mask": float(depth_coverage[fused_mask].mean())
         if np.any(fused_mask) else 0.0,
@@ -1464,7 +1640,9 @@ def reconstruct_canopy(
         title=f"{root.name} canopy",
         point_cloud=pcd,
         metadata={
-            "Model": "display mesh" if cfg.add_leaf_thickness else "metric mesh",
+            "Model": "canopy sheet" if cfg.display_as_canopy_sheet else (
+                "display mesh" if cfg.add_leaf_thickness else "metric mesh"
+            ),
             "Metric mesh": str(mesh_path.name),
             "Display mesh": str(display_mesh_path.name),
             "Frames": f"{len(selected)}/{len(all_pairs)}",

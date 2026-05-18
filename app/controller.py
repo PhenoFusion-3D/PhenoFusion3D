@@ -6,6 +6,7 @@ from file_io.loader   import load_image_pairs, load_intrinsics, get_default_intr
 from file_io.exporter import save_ply, save_metrics_csv
 from app.worker       import ProcessingWorker
 from app.canopy_worker import CanopyWorker
+from app.canopy_sequence_worker import CanopySequenceWorker
 from app.capture_worker import CaptureWorker
 from app.calibration_worker import CalibrationWorker
 from app.quality_worker import QualityWorker
@@ -46,6 +47,7 @@ class Controller(QObject):
         super().__init__(parent)
         self.worker          = None
         self.canopy_worker   = None
+        self.canopy_sequence_worker = None
         self.capture_worker  = None
         self.quality_worker  = None
         self.calibration_worker = None
@@ -85,9 +87,16 @@ class Controller(QObject):
 
         # --- Canopy mode: runs a completely separate worker ---
         if use_canopy:
-            self._start_canopy(rgb_dir, depth_dir, intrinsics_path,
-                               depth_min_mm, depth_trunc, canopy_stride,
-                               canopy_extras or {})
+            extras = canopy_extras or {}
+            if extras.get('sequence_mode'):
+                self._start_canopy_sequence(
+                    rgb_dir, depth_dir, intrinsics_path,
+                    depth_min_mm, depth_trunc, canopy_stride, extras
+                )
+            else:
+                self._start_canopy(rgb_dir, depth_dir, intrinsics_path,
+                                   depth_min_mm, depth_trunc, canopy_stride,
+                                   extras)
             return
 
         try:
@@ -122,8 +131,8 @@ class Controller(QObject):
         erode        = True  if is_icl else False
         inpaint      = True  if is_icl else False
 
-        # Strip white/grey gantry surfaces and anchor ICP on plant pixels only.
-        # Disabled for ICL-NUIM ground-truth (no gantry; using standard depth noise model).
+        # Optional plant-focused ICP. Keep disabled for full-scene sequence
+        # reconstruction so the tray, box, rails, and background remain visible.
         bg_mask  = mask_background and not is_icl
         p_icp    = bg_mask   # plant_icp follows mask_background for non-ICL data
 
@@ -183,7 +192,7 @@ class Controller(QObject):
                       depth_min_mm, depth_trunc, stride, canopy_extras=None):
         """Launch a CanopyWorker for the top-down plant fusion pipeline."""
         from pathlib import Path
-        dataset_root = str(Path(rgb_dir).parent)
+        dataset_root = str(self._dataset_root_from_dirs(rgb_dir, depth_dir))
         self.status_changed.emit(f'Starting canopy reconstruction on {dataset_root}...')
 
         extras = canopy_extras or {}
@@ -205,6 +214,39 @@ class Controller(QObject):
         self.canopy_worker.start()
         self.viewer.start()
 
+    def _start_canopy_sequence(self, rgb_dir, depth_dir, intrinsics_path,
+                               depth_min_mm, depth_trunc, stride, canopy_extras=None):
+        """Launch multi-plant canopy sequence reconstruction."""
+        dataset_root = str(self._dataset_root_from_dirs(rgb_dir, depth_dir))
+        extras = canopy_extras or {}
+        self.status_changed.emit(f'Starting multi-plant canopy sequence on {dataset_root}...')
+        self.canopy_sequence_worker = CanopySequenceWorker(
+            dataset_root=dataset_root,
+            depth_min=int(depth_min_mm) if depth_min_mm else 500,
+            depth_max=int(depth_trunc * 1000) if depth_trunc else 4000,
+            detection_stride=max(1, int(stride)),
+            fusion_stride=1,
+            max_frames=int(extras.get('max_frames', 15)),
+            coverage_threshold=int(extras.get('coverage', 1)),
+            smooth_sigma=float(extras.get('smooth_sigma', 0.8)),
+            component_min_area=int(extras.get('component_min_area', 8000)),
+            leaf_thickness=0.003 if extras.get('add_leaf_thickness', False) else 0.0,
+        )
+        self.canopy_sequence_worker.finished.connect(self._on_canopy_sequence_finished)
+        self.canopy_sequence_worker.error.connect(self.error_occurred)
+        self.canopy_sequence_worker.start()
+        self.viewer.start()
+
+    def _dataset_root_from_dirs(self, rgb_dir, depth_dir):
+        from pathlib import Path
+        rgb_path = Path(rgb_dir)
+        depth_path = Path(depth_dir)
+        if rgb_path.name.lower() == 'rgb' and depth_path.name.lower() == 'depth':
+            return rgb_path.parent
+        if any(rgb_path.glob('rgb_*.png')):
+            return rgb_path
+        return rgb_path.parent
+
     @pyqtSlot(object, str)
     def _on_canopy_finished(self, pcd, summary_str):
         self.final_pcd = pcd
@@ -213,6 +255,17 @@ class Controller(QObject):
         pt_count = len(pcd.points) if (pcd and not pcd.is_empty()) else 0
         self.status_changed.emit(
             f'Canopy done. {pt_count:,} points. Use File menu to export.'
+        )
+        self.reconstruction_complete.emit(pcd, [], [])
+
+    @pyqtSlot(object, str)
+    def _on_canopy_sequence_finished(self, pcd, summary_str):
+        self.final_pcd = pcd
+        if pcd is not None and not pcd.is_empty():
+            self.viewer.update(pcd)
+        pt_count = len(pcd.points) if (pcd and not pcd.is_empty()) else 0
+        self.status_changed.emit(
+            f'Canopy sequence done. {pt_count:,} points. Summary: {summary_str}'
         )
         self.reconstruction_complete.emit(pcd, [], [])
 

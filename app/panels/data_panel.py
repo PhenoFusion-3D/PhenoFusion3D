@@ -59,13 +59,15 @@ class DataPanel(QWidget):
         self.recon_mode_combo = QComboBox()
         self.recon_mode_combo.addItem('ICP  (frame-to-frame, recommended)', userData='icp')
         self.recon_mode_combo.addItem('TSDF (known poses, requires calibration)', userData='tsdf')
+        self.recon_mode_combo.addItem('Canopy Sequence (multi-plant top-down)', userData='canopy_sequence')
         self.recon_mode_combo.addItem('Canopy (top-down plant fusion — best quality)', userData='canopy')
-        self.recon_mode_combo.setCurrentIndex(2)
+        self.recon_mode_combo.setCurrentIndex(0)
         self.recon_mode_combo.setToolTip(
             'ICP: frame-to-frame colour ICP — no gantry calibration needed.\n'
             'TSDF: kinematic poses from gantry step+axis calibration.\n'
             'Canopy: top-down depth fusion via green-leaf auto-masking —\n'
-            '  recommended for overhead gantry plant scans; produces a mesh.'
+            '  recommended for overhead gantry plant scans; produces a mesh.\n'
+            'Canopy Sequence: detects multiple plants in one long scan and writes a combined viewer.'
         )
         self.recon_mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         advanced_layout.addRow('Recon Mode:', self.recon_mode_combo)
@@ -148,12 +150,12 @@ class DataPanel(QWidget):
         )
         advanced_layout.addRow('ICP Recovery:', self.feature_init_check)
 
-        self.mask_background_check = QCheckBox('Strip background (recommended)')
-        self.mask_background_check.setChecked(True)
+        self.mask_background_check = QCheckBox('Strip background / plant-only ICP')
+        self.mask_background_check.setChecked(False)
         self.mask_background_check.setToolTip(
             'Zero depth for low-saturation (white/grey) pixels before integration.\n'
-            'Removes gantry arm and background card from the reconstruction.\n'
-            'Should be ON for real plant captures; auto-disabled for ICL-NUIM datasets.'
+            'Turn this OFF for full-sequence scene reconstruction with background.\n'
+            'Turn it ON only when you deliberately want plant-focused ICP.'
         )
         advanced_layout.addRow('Background Mask:', self.mask_background_check)
 
@@ -182,12 +184,12 @@ class DataPanel(QWidget):
         advanced_layout.addRow('Canopy Stride:', self.canopy_stride_spin)
 
         self.canopy_max_frames_spin = QSpinBox()
-        self.canopy_max_frames_spin.setRange(3, 30)
+        self.canopy_max_frames_spin.setRange(3, 45)
         self.canopy_max_frames_spin.setValue(15)
         self.canopy_max_frames_spin.setToolTip(
             'Maximum frames to include in the depth fusion.\n'
             'More frames = denser fused surface but slower.\n'
-            'Try 9–15 for best quality on clean datasets.'
+            'Try 15–25 for broad leaves that span much of the camera view.'
         )
         advanced_layout.addRow('Max Frames:', self.canopy_max_frames_spin)
 
@@ -227,7 +229,7 @@ class DataPanel(QWidget):
         advanced_layout.addRow('Mask Sensitivity:', self.canopy_mask_combo)
 
         self.canopy_thickness_check = QCheckBox('Add leaf thickness layer')
-        self.canopy_thickness_check.setChecked(True)
+        self.canopy_thickness_check.setChecked(False)
         self.canopy_thickness_check.setToolTip(
             'Duplicate the top-surface point cloud with a small Z offset to simulate\n'
             'leaf thickness.  Greatly improves side-view appearance without extra\n'
@@ -333,7 +335,7 @@ class DataPanel(QWidget):
 
     def _on_mode_changed(self, _index: int) -> None:
         mode = self.recon_mode_combo.currentData()
-        is_canopy = (mode == 'canopy')
+        is_canopy = (mode in ('canopy', 'canopy_sequence'))
         is_tsdf   = (mode == 'tsdf')
         # Canopy-specific controls
         for w in (
@@ -364,7 +366,7 @@ class DataPanel(QWidget):
         enable_feature_init = self.feature_init_check.isChecked()
         mode            = self.recon_mode_combo.currentData()
         use_tsdf        = (mode == 'tsdf')
-        use_canopy      = (mode == 'canopy')
+        use_canopy      = (mode in ('canopy', 'canopy_sequence'))
         mask_background = self.mask_background_check.isChecked()
         tsdf_voxel_m    = self.tsdf_voxel_spin.value()
         canopy_stride   = self.canopy_stride_spin.value()
@@ -375,6 +377,8 @@ class DataPanel(QWidget):
             'smooth_sigma':      self.canopy_sigma_spin.value(),
             'mask_sensitivity':  self.canopy_mask_combo.currentData(),
             'add_leaf_thickness': self.canopy_thickness_check.isChecked(),
+            'sequence_mode':     mode == 'canopy_sequence',
+            'component_min_area': 8000,
         }
 
         # Quick count check (both flat and ICL-style)
