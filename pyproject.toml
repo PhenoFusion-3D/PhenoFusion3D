@@ -25,6 +25,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional offline analysis; no camera/ROS dependencies or lab pins are changed.
+analysis = ["scipy>=1.10.0"]
 # Complete Linux lab UI environment. The RealSense Python binding is isolated
 # inside the project venv. ROS itself and the gantry's catkin workspace remain
 # machine-managed and are used through capture/ros_agent.py; never pip-install
