@@ -43,7 +43,13 @@ class TraitResult:
     bbox_volume_m3: float
     convex_hull_area_m2: float
     convex_hull_volume_m3: float
+    projected_canopy_area_m2: float
+    projected_area_grid_m: float
+    projected_convex_hull_area_m2: float
+    canopy_major_span_m: float
+    canopy_minor_span_m: float
     height_max_m: float
+    height_robust_5_95_m: float
     height_top_1_pct_m: float
     height_top_3_pct_m: float
     height_top_5_pct_m: float
@@ -428,9 +434,24 @@ def extract_traits(
     o3d.io.write_triangle_mesh(str(convex_hull_ply), hull)
 
     axis = _axis_index(height_axis)
+    plane_axes = [index for index in range(3) if index != axis]
+    projected = pts[:, plane_axes].astype(np.float32)
+    projected_area_grid_m = 0.005
+    projected_cells = np.floor(
+        (projected - np.min(projected, axis=0)) / projected_area_grid_m
+    ).astype(np.int32)
+    projected_canopy_area = float(
+        len(np.unique(projected_cells, axis=0)) * projected_area_grid_m**2
+    )
+    projected_hull = cv2.convexHull(projected)
+    projected_hull_area = float(cv2.contourArea(projected_hull))
+    (_, _), (span_a, span_b), _ = cv2.minAreaRect(projected_hull)
+    canopy_major_span = float(max(span_a, span_b))
+    canopy_minor_span = float(min(span_a, span_b))
     heights = np.sort(pts[:, axis])[::-1]
     base = float(np.min(pts[:, axis]))
     height_max = float(np.max(pts[:, axis]) - base)
+    height_robust = float(np.percentile(pts[:, axis], 95) - np.percentile(pts[:, axis], 5))
 
     traits_json = output_dir / 'traits.json'
     traits_csv = output_dir / 'traits.csv'
@@ -446,7 +467,13 @@ def extract_traits(
         bbox_volume_m3=float(np.prod(extent)),
         convex_hull_area_m2=float(hull.get_surface_area()),
         convex_hull_volume_m3=float(hull.get_volume()),
+        projected_canopy_area_m2=projected_canopy_area,
+        projected_area_grid_m=projected_area_grid_m,
+        projected_convex_hull_area_m2=projected_hull_area,
+        canopy_major_span_m=canopy_major_span,
+        canopy_minor_span_m=canopy_minor_span,
         height_max_m=height_max,
+        height_robust_5_95_m=height_robust,
         height_top_1_pct_m=float(_top_percent(heights, 1) - base),
         height_top_3_pct_m=float(_top_percent(heights, 3) - base),
         height_top_5_pct_m=float(_top_percent(heights, 5) - base),

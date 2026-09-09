@@ -130,6 +130,29 @@ class MainWindow(QMainWindow):
         action_exit.triggered.connect(self.close)
         file_menu.addAction(action_exit)
 
+        analysis_menu = menubar.addMenu('Analysis')
+        self.action_analysis = QAction('Offline reconstruction and trait validation...', self)
+        self.action_analysis.triggered.connect(self._open_analysis)
+        analysis_menu.addAction(self.action_analysis)
+
+    def _open_analysis(self):
+        # Import only the lightweight dialog here. Heavy processing is isolated
+        # in a child process and never imported by the lab startup/capture path.
+        from app.analysis_dialog import AnalysisDialog
+        if not hasattr(self, 'analysis_dialog'):
+            self.analysis_dialog = AnalysisDialog(self.controller, self)
+            # Capture always has priority over an optional offline computation.
+            self.controller.capture_started.connect(self.analysis_dialog.cancel)
+        rgb_dir = self.data_panel.rgb_edit.text()
+        if rgb_dir and not self.analysis_dialog.dataset.text():
+            from pathlib import Path
+            root = str(Path(rgb_dir).parent)
+            self.analysis_dialog.dataset.setText(root)
+            self.analysis_dialog.ref_dataset.setText(root)
+            self.analysis_dialog.leaf_dataset.setText(root)
+        self.analysis_dialog.show()
+        self.analysis_dialog.raise_()
+
     def _build_statusbar(self):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -291,6 +314,8 @@ class MainWindow(QMainWindow):
             self.controller.shutdown()
         except Exception:
             pass
+        if hasattr(self, 'analysis_dialog'):
+            self.analysis_dialog.close()
         super().closeEvent(event)
 
     @pyqtSlot()

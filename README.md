@@ -10,6 +10,12 @@ tell, before reconstructing, whether the data is good enough to use.
 Developed by the ANU COMP8715 TechLauncher team for plant-phenotyping and
 controlled-environment plant-imaging workflows.
 
+The application also provides **Analysis → Offline reconstruction and trait
+validation** for saved recordings. It includes automatic RGB stereo/ICP recovery,
+the existing sensor-depth ICP route, canopy comparisons and matched leaf
+measurements. See [the offline analysis guide](ANALYSIS_WORKFLOW.md) for supported
+capture geometry, calibration requirements and lab acceptance checks.
+
 ## Keywords
 
 `3D Reconstruction` · `RGB-D Imaging` · `Point Cloud Processing` ·

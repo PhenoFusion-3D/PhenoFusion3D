@@ -49,3 +49,8 @@ dist/
 build/
 __pycache__/
 *.pyc
+
+# Local analysis outputs and development workspaces
+/generated/
+/.codex-worktrees/
+/.cursor/
