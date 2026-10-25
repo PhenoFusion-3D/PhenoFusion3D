@@ -1,4 +1,32 @@
-# PhenoFusion3D — RGB-D Capture and 3D Point-Cloud Reconstruction for Plant Phenotyping
+# PhenoFusion3D
+
+Plant imaging software for RGB-D capture, 3D reconstruction, trait review and
+experimental hyperspectral analysis. Developed with the Australian Plant
+Phenomics Network at ANU.
+
+## Start here for handover
+
+The team reports that the current software works on the laboratory machine and
+that the stakeholder has access to the software and both repositories. Record
+the exact tested release and machine in the handover record. A working native
+installation is separate from acceptance of a container package.
+
+| I want to | Start here |
+|---|---|
+| Open the existing lab installation or install an analysis copy | [Software quick start](docs/handover/SOFTWARE_QUICKSTART.md) |
+| Find datasets, intermediate outputs and final results | [Research archive and retrieval](docs/handover/RESEARCH_ARCHIVE.md) |
+| Reproduce a result with its parameters and limitations | [Reproducing results](docs/handover/REPRODUCING_RESULTS.md) |
+| Maintain or extend the application | [Software maintenance](docs/handover/SOFTWARE_MAINTENANCE.md) |
+| Diagnose installation, input or report problems | [Troubleshooting](docs/handover/TROUBLESHOOTING.md) |
+| Use capture and gantry controls | [Laboratory operator guide](docs/final-sprint-20260928/USER_GUIDE.md) |
+| Browse the public results | [Results website](https://phenofusion3d.github.io/results/all/) |
+
+The software repository and website repository are separate deliverables.
+Large recordings and generated clouds/reports are excluded from Git; a clone
+alone does not contain the research archive. Preserve the archive catalogue,
+inputs, parameters and status alongside results.
+
+## What the software does
 
 Reconstructs a single coloured 3D point cloud of a plant from a gantry-mounted
 RGB-D camera. The software captures paired colour and depth frames along a
@@ -78,7 +106,8 @@ system-wide launcher. See [install/README.md](install/README.md) for the full
 safety boundary and for Windows instructions.
 
 Do not commit large datasets or generated point clouds; see `.gitignore`
-(`data/`, `*.ply`, `*.pcd`, etc.).
+(`data/`, `generated/`, `*.ply`, `*.pcd`, etc.). The separately delivered
+archive is documented in [Research archive and retrieval](docs/handover/RESEARCH_ARCHIVE.md).
 
 ---
 
@@ -111,10 +140,11 @@ Two on-disk layouts are accepted by `load_image_pairs`
 ### Constraints
 
 - **Paired frames required.** RGB and depth directories must contain the same
-  number of files; pairing is by natural sort order, so numbering must be
-  consistent across the two folders.
+  number of files and matching normalised frame identifiers. The loader sorts
+  naturally and rejects mismatched IDs; do not rename unrelated frames to force a pair.
 - **Supported sensors:** Intel RealSense RGB-D cameras exposing both a colour
-  and a depth stream — validated on **L515, D435, and D405**. Device selection
+  and a depth stream. The capture implementation includes support for **L515, D435, and D405**;
+  acceptance records must identify the model actually tested on the lab rig. Device selection
   is dynamic and profile-negotiated, so replacement units are not tied to any
   hard-coded serial.
 - **Capture resolution:** requested `1280×720 @ 30 fps` by default. If the
@@ -144,7 +174,7 @@ Two on-disk layouts are accepted by `load_image_pairs`
 | Home position | `5 mm` | Gantry go-home target |
 | Home / Go To velocity | `150 mm/s` | Gantry absolute-motion velocity |
 | `gantry_axis` | `0` | `0` = X, `1` = Y in the camera frame |
-| `depth_scale` | `1000.0` | Depth units per metre (use `1.0` for ICL-NUIM) |
+| `depth_scale` | `1000.0` | Legacy default in raw units per metre; replace with the recorded sensor/dataset encoding |
 | `depth_trunc` | `3.0` (recon) / `4.0` (quality) | Maximum retained depth (m) |
 | `voxel_size` | `0.005` | Downsample voxel edge length (m) |
 | `max_iter` | `50` | ICP iteration cap |
@@ -290,7 +320,10 @@ verifying the pipeline still works after system changes:
 
 After extracting under `data/` (e.g. `data/icl_nuim/`), you typically get **`rgb/`** and **`depth/`** folders of matching numbered PNGs, plus metadata such as a ground-truth trajectory (**`livingRoom1.gt.freiburg`**) for evaluation—the loader does not read that file; it only needs paired RGB/depth paths and intrinsics.
 
-Point `load_image_pairs` at your **`rgb`** and **`depth`** directories, supply **`kdc_intrinsics.txt`** (or project-specific intrinsics JSON), and set **`depth_scale`** (often **`1.0`** for this dataset) when constructing **`Reconstructor`**.
+Point `load_image_pairs` at your **`rgb`** and **`depth`** directories, supply **`kdc_intrinsics.txt`** (or project-specific intrinsics JSON), and set
+**`depth_scale`** from the downloaded release's depth encoding when constructing
+**`Reconstructor`**. Do not assume a scale from the dataset name or tune it to
+make the plant appear the expected size.
 
 For a synthetic end-to-end check that needs no download:
 
@@ -323,8 +356,10 @@ should not be assumed:
 - Registration RMSE against a published benchmark, reported as a distribution
   rather than a single sequence.
 - Point-cloud completeness / coverage metrics.
-- Trait-level agreement (e.g. plant height, canopy area) against manual
-  measurement.
+- General trait-level accuracy across plants. The project includes reviewed
+  manual comparisons with exclusions and provisional estimates; these do not
+  establish a general accuracy guarantee. Keep the latest corrected review with
+  its photographs and status rather than reusing superseded aggregate claims.
 - Any peer-reviewed validation study arising from the project.
 
 ---
@@ -364,10 +399,10 @@ should not be assumed:
 
 - **Two filename layouts** (see `load_image_pairs` in `file_io/loader.py`):
   - **Stakeholder:** `rgb_*.png` and `depth_*.png` in separate directories.
-  - **ICL-NUIM / numbered:** `0.png`, `1.png`, … in `rgb/` and `depth/` (same count; paired by natural sort order).
+  - **ICL-NUIM / numbered:** `0.png`, `1.png`, … in `rgb/` and `depth/` (same count and matching normalised frame IDs; naturally sorted).
 - **Subsampling:** Pass **`step=n`** to use every *n*-th pair (e.g. faster experiments).
-- **Intrinsics:** JSON in the style of `kdc_intrinsics.txt` with keys such as `K` (3×3), `dist`, `width`, `height`. If the file is missing or invalid, use **`get_default_intrinsics()`** (optionally pass image size to match your frames).
-- **Depth units:** Defaults in **`Reconstructor`** assume depth in **millimetres** and **`depth_scale=1000.0`**. For **ICL-NUIM** Freiburg PNG releases, **`depth_scale=1.0`** is typical (depth in metres); tune **`depth_scale`**, **`depth_trunc`**, and **`voxel_size`** if colours or alignment look wrong (e.g. when slicing a subset of frames).
+- **Intrinsics:** JSON in the style of `kdc_intrinsics.txt` with keys such as `K` (3×3), `dist`, `width`, `height`. The legacy helper **`get_default_intrinsics()`** supplies an approximate model when calibration is absent; it is not measured calibration. Use matching recorded intrinsics for metric research and acceptance runs. Missing calibration must remain an explicit limitation.
+- **Depth units:** Defaults in **`Reconstructor`** assume depth in **millimetres** and **`depth_scale=1000.0`**. Read the capture metadata or dataset specification for the actual depth encoding. A 0.0001 m sensor depth unit means `depth_scale=10000.0`. Keep depth units fixed to that evidence; `depth_trunc` and `voxel_size` are separate documented processing settings.
 
 ### Organizing `data/main` (ICL-style layout)
 
@@ -396,7 +431,7 @@ The **`Reconstructor`** class in `processing/reconstructor.py` takes a list of `
 
 - If **`save_path`** is set, **`merge_pcd_live.ply`** is updated in that folder after each successful frame (final file = full merged cloud at end of run). Use **`file_io.exporter.save_ply`** for one-off or custom export paths; **`save_metrics_csv`** if you record per-frame metrics in a list of dicts.
 
-Typical real-data usage: **`pairs = load_image_pairs(rgb_dir, depth_dir, step=1)`**, **`load_intrinsics(path)`** or defaults, then **`Reconstructor(pairs=..., K=..., dist=..., depth_scale=..., save_path=...).run()`**. You can slice **`pairs`** (e.g. Python list slicing) to run on a subset of frames.
+Typical real-data usage: **`pairs = load_image_pairs(rgb_dir, depth_dir, step=1)`**, **`load_intrinsics(path)`** with matching recorded calibration, then **`Reconstructor(pairs=..., K=..., dist=..., depth_scale=..., save_path=...).run()`**. You can slice **`pairs`** (e.g. Python list slicing) to run on a subset of frames.
 
 ### Dependencies
 
@@ -406,8 +441,9 @@ Declared in `requirements.txt`: Open3D, OpenCV, NumPy, natsort, tqdm, PyQt5, pyq
 
 ## Version history
 
-Current version: **0.2.0** (see `pyproject.toml`). Releases are not yet git-tagged;
-the milestones below are drawn from the commit history.
+Package version: **0.2.0** (see `pyproject.toml`). This number alone does not
+identify a delivered build: record the exact commit and any release tag in the
+handover manifest. The milestones below describe historical changes.
 
 | Version | Date | Changes |
 |---|---|---|

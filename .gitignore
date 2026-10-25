@@ -54,3 +54,7 @@ __pycache__/
 /generated/
 /.codex-worktrees/
 /.cursor/
+
+# Handover archives and document rendering scratch files stay outside source Git.
+/output/
+/tmp/

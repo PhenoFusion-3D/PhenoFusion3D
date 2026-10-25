@@ -1,0 +1,14 @@
+**
+!pyproject.toml
+!README.md
+!LICENSE
+!main.py
+!app/**
+!capture/**
+!file_io/**
+!processing/**
+!visualiser/**
+!tools/handover/**
+!install/container/**
+**/__pycache__/**
+**/*.pyc
