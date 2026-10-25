@@ -20,20 +20,26 @@ jobs:
   recorded-data-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: Build recorded-data environment
         run: docker build -f install/container/Dockerfile --build-arg SOURCE_REVISION=${{ github.sha }} -t phenofusion3d:handover .
       - name: Check dependencies and geometry without network or devices
         run: |
+          set -euo pipefail
           mkdir -p container-receipt
-          docker run --rm --network none phenofusion3d:handover | tee container-receipt/smoke.json
+          docker run --rm --network none -e QT_DEBUG_PLUGINS=1 phenofusion3d:handover > container-receipt/smoke.json
+          python -c "import json; r=json.load(open('container-receipt/smoke.json')); assert r['status']=='pass' and r['hardware_accessed'] is False"
           docker run --rm --network none phenofusion3d:handover python -m processing.research_workspace --help > container-receipt/workspace-help.txt
           docker run --rm --network none phenofusion3d:handover python -m processing.hyperspectral --help > container-receipt/hyperspectral-help.txt
           docker image inspect phenofusion3d:handover > container-receipt/image.json
           docker run --rm --network none phenofusion3d:handover cat environment.txt > container-receipt/environment.txt
       - name: Export offline image
         run: |
+          set -euo pipefail
           docker save phenofusion3d:handover | gzip -1 > container-receipt/PhenoFusion3D_recorded_data_image.tar.gz
           cd container-receipt
           sha256sum PhenoFusion3D_recorded_data_image.tar.gz > SHA256SUMS.txt

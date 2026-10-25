@@ -5,7 +5,9 @@ from importlib.metadata import version
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
 
+QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
 app = QApplication([])
 import cv2
 import numpy as np

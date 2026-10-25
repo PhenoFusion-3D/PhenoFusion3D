@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timezone
 
 SCHEMA = "phenofusion3d.archive-manifest.v1"
-EXCLUDE_DIRS = {".git", ".venv", "venv", ".venv-linux", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+EXCLUDE_DIRS = {".git", ".venv", "venv", ".venv-linux", "isolated_linux_env", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
 
 def inside(root: Path, relative: str) -> Path:

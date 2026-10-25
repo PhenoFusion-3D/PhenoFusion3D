@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     MPLCONFIGDIR=/tmp/matplotlib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libegl1 libglib2.0-0 libgomp1 libnss3 libdbus-1-3 \
+    libfontconfig1 libfreetype6 libxrender1 libsm6 libice6 \
     libxkbcommon-x11-0 libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 \
     libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libasound2 libxcomposite1 \
     libxdamage1 libxrandr2 libxtst6 libxss1 libxi6 libusb-1.0-0 \
