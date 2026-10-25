@@ -39,9 +39,10 @@ for dependency caches, virtual environments and disposable rendering builds.
 3. Extract source and research ZIPs into a new staging area. Research ZIPs retain
    project-relative paths such as `data/main/...` and `generated/research_...`.
    Follow the package index's source-root instructions; do not flatten folders.
-4. Keep the uniquely named external manifest for each ZIP. The embedded
-   `HANDOVER_MANIFEST.json` has a common filename and may be replaced when merging
-   extractions; that does not replace the external manifests.
+4. Keep the uniquely named external manifest for each ZIP. Consult each receipt
+   for its embedded manifest path. New archives use `HANDOVER_MANIFESTS/` with a
+   unique name; if an older stored archive uses `HANDOVER_MANIFEST.json`, keep its
+   external copy because extracting another archive may replace that filename.
 5. Use `python tools/handover/archive_catalogue.py --help` for supported manifest
    creation and verification options. Do not treat a metadata-only inventory
    with null hashes as checksum evidence. The package index also records CRC

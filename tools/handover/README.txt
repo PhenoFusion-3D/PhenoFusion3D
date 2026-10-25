@@ -16,4 +16,4 @@ python tools/handover/archive_catalogue.py verify --root "D:/PhenoFusion3D_Deliv
 Exit codes: 0 = successful selected-file check; 1 = file errors; 2 = invalid arguments, incomplete/metadata-only manifest or unsafe path.
 A PASS report verifies manifest-listed bytes. It does not prove that every project source was included, that a remote account can access the archive, or that a stakeholder accepted delivery. Record those separately.
 
-The selection JSON has a roots list. Each entry may be a relative directory/file string or an object containing path. Rejects absolute paths, parent traversal and source symlinks. Typical cache and environment directories are excluded; review the exclusion list against your actual setup.
+The selection JSON has a roots list. Each entry is a relative directory string or an object containing path. Rejects absolute paths, parent traversal and source symlinks. Typical cache and environment directories are excluded; review the exclusion list against your actual setup.
